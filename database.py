@@ -123,3 +123,54 @@ def get_pending_withdraws():
     rows = cursor.fetchall()
     conn.close()
     return rows
+
+
+def get_withdraws_by_ids(withdraw_ids):
+    if not withdraw_ids:
+        return []
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    placeholders = ",".join(["?"] * len(withdraw_ids))
+    cursor.execute(
+        f"""
+        SELECT
+            withdraw_request_id,
+            beneficiary_name,
+            account_number,
+            ifsc_code,
+            amount,
+            status,
+            order_id,
+            payment_method
+        FROM withdraw_requests
+        WHERE withdraw_request_id IN ({placeholders})
+        """,
+        withdraw_ids
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def mark_withdraw_processing(withdraw_request_id, order_id, payment_method):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE withdraw_requests
+        SET
+            status = 1,
+            order_id = ?,
+            payment_method = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE withdraw_request_id = ?
+        """,
+        (order_id, payment_method, withdraw_request_id)
+    )
+
+    conn.commit()
+    conn.close()

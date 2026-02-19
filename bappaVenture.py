@@ -1,5 +1,7 @@
 from config import *
 import requests
+import json
+import base64
 from typing import Dict
 
 def BA_check_payout_status(orderid: str) -> Dict:
@@ -61,35 +63,65 @@ def BA_check_payin_status(orderid: str) -> Dict:
             "error": str(exc)
         }
 
-def BA_create_payout_order(orderid: str, acc_no: str, ifsc: str, amount: int, bankname: str, name: str, contact: str, email: str) -> Dict:
+def BA_create_payout_order(orderid: str,
+                           acc_no: str,
+                           ifsc: str,
+                           amount: int,
+                           bankname: str,
+                           name: str,
+                           contact: str,
+                           email: str) -> Dict:
+
     try:
-        response = requests.get(
+        # 🔹 Step 1: Prepare payload (ALL values must be strings)
+        payload = {
+            "merchant_id": str(BA_MERCHANT_ID),
+            "merchant_token": str(BA_MERCHANT_TOKEN),
+            "account_no": str(acc_no),
+            "ifsccode": str(ifsc),
+            "amount": str(amount),  # must be string
+            "bankname": str(bankname),
+            "remark": "Payment",
+            "orderid": str(orderid),
+            "name": str(name),
+            "contact": str(contact),
+            "email": str(email)
+        }
+
+        # 🔹 Step 2: Convert to JSON string
+        json_payload = json.dumps(payload)
+
+        # 🔹 Step 3: Encode to Base64
+        encoded_payload = base64.b64encode(json_payload.encode("utf-8")).decode("utf-8")
+
+        # 🔹 Step 4: Send in "salt"
+        response = requests.post(
             BA_PAYOUT_ORDER_URL,
-            params={
-                "merchant_id": BA_MERCHANT_ID,
-                "merchant_token": BA_MERCHANT_TOKEN,
-                "account_no": acc_no,
-                "ifsccode": ifsc,
-                "amount": amount,
-                "bankname": bankname,
-                "remark": "Payment",
-                "orderid": orderid,
-                "name": name,
-                "contact": contact,
-                "email": email
+            json={   # Send JSON body
+                "salt": encoded_payload
             },
-            timeout=TIMEOUT
+            timeout=30
         )
-        return _safe_json(response)
+
+        return response.json()
+
     except requests.exceptions.Timeout:
         return {
             "status": "error",
             "error_type": "timeout",
-            "error": f"Pay-in API timed out after {TIMEOUT} seconds."
+            "error": "Payout API timed out."
         }
+
     except requests.exceptions.RequestException as exc:
         return {
             "status": "error",
             "error_type": "request_exception",
             "error": str(exc)
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_type": "unknown",
+            "error": str(e)
         }

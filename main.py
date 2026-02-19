@@ -1,5 +1,8 @@
 import os
 import asyncio
+import time
+import requests
+import random
 from math import isfinite
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,9 +16,19 @@ from telegram.ext import (
     filters
 )
 import csv
-from database import insert_withdraw, init_db, get_pending_withdraws
-from bappaVenture import BA_check_payout_status, BA_check_payin_status
-from wellness import wln_check_payin_status, wln_check_payout_payment_status
+from database import (
+    insert_withdraw,
+    init_db,
+    get_pending_withdraws,
+    get_withdraws_by_ids,
+    mark_withdraw_processing,
+)
+from bappaVenture import BA_check_payout_status, BA_check_payin_status, BA_create_payout_order
+from wellness import (
+    wln_check_payin_status,
+    wln_check_payout_payment_status,
+    wln_create_payout_payment,
+)
 
 from downloader import download_withdraw_csv
 from config import *
@@ -25,6 +38,46 @@ from config import *
 ASK_WITHDRAW_ID = 1
 ASK_MERCHANT_ID = 2
 ASK_ORDER_ID = 3
+ASK_SEND_WITHDRAW_IDS = 4
+ASK_SEND_WITHDRAW_GATEWAY = 5
+
+# ==================================================
+
+
+# ================= HELPERS =======================
+
+def get_bank_name_from_ifsc(ifsc_code: str) -> str:
+    url = f"https://ifsc.razorpay.com/{ifsc_code}"
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()  # Raises error for bad HTTP status
+    except requests.RequestException as e:
+        raise RuntimeError(f"Network error: {e}")
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError("Invalid JSON response received")
+
+    bank_name = data.get("BANK")
+
+    if not bank_name:
+        raise RuntimeError("Bank name not found in response")
+
+    return bank_name
+
+def load_file_lines(filepath: str) -> list:
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        raise RuntimeError(f"{filepath} not found")
+
+    if not lines:
+        raise RuntimeError(f"{filepath} is empty")
+
+    return lines
 
 # ==================================================
 
@@ -300,6 +353,237 @@ async def handle_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+def parse_withdraw_ids(raw_text: str):
+    lines = raw_text.replace("\r", "\n").split("\n")
+    ids = []
+
+    for line in lines:
+        wd_id = line.strip().strip("`").strip("'").strip('"').strip(",")
+        if wd_id and wd_id not in ids:
+            ids.append(wd_id)
+
+    return ids
+
+
+async def sendwithdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return ConversationHandler.END
+
+    context.user_data["sendwithdraw_ids"] = []
+    await update.message.reply_text(
+        "📝 Send withdraw IDs in new lines.\nExample:\nWD-111\nWD-222\nWD-333"
+    )
+    return ASK_SEND_WITHDRAW_IDS
+
+
+async def handle_sendwithdraw_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    withdraw_ids = parse_withdraw_ids(update.message.text or "")
+
+    if not withdraw_ids:
+        await update.message.reply_text(
+            "❌ No valid IDs found. Send one withdraw ID per line."
+        )
+        return ASK_SEND_WITHDRAW_IDS
+
+    context.user_data["sendwithdraw_ids"] = withdraw_ids
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("BappaVenture", callback_data="sendwd_gateway:ba")],
+            [InlineKeyboardButton("Wellness", callback_data="sendwd_gateway:wln")],
+        ]
+    )
+    await update.message.reply_text(
+        f"Found {len(withdraw_ids)} IDs.\nSelect gateway:",
+        reply_markup=keyboard
+    )
+    return ASK_SEND_WITHDRAW_GATEWAY
+
+
+async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    if not has_permission(user_id, "ba_payout_status"):
+        await query.edit_message_text("⛔ You don't have permission.")
+        return ConversationHandler.END
+
+    selected_gateway = query.data.split(":", 1)[1]
+    payment_method = None
+
+    if selected_gateway == "ba":
+        payment_method = "BappaVenture"
+    elif selected_gateway == "wln":
+        payment_method = "Wellness"
+
+    withdraw_ids = context.user_data.get("sendwithdraw_ids", [])
+
+    if not withdraw_ids:
+        await query.edit_message_text("❌ No withdraw IDs found. Please run /sendwithdraw again.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        f"⏳ Creating payouts for {len(withdraw_ids)} withdraw IDs via {payment_method}..."
+    )
+
+    rows = get_withdraws_by_ids(withdraw_ids)
+    row_map = {}
+    for row in rows:
+        row_map[row[0]] = row
+
+    success_items = []
+    failed_items = []
+
+    # Load numbers & emails once
+    try:
+        numbers_list = load_file_lines("datas/mobile_numbers.txt")
+        emails_list = load_file_lines("datas/gmail_ids.txt")
+    except Exception as e:
+        await query.message.reply_text(f"❌ Setup error: {str(e)}")
+        context.user_data.pop("sendwithdraw_ids", None)
+        return ConversationHandler.END
+
+    for idx, wd_id in enumerate(withdraw_ids, start=1):
+        row = row_map.get(wd_id)
+        if not row:
+            failed_items.append(f"{wd_id} -> Not found in DB")
+            continue
+
+        _, beneficiary_name, account_number, ifsc_code, amount, status, _, _ = row
+
+        if status not in (0, 1):
+            failed_items.append(f"{wd_id} -> Status {status}, skipped")
+            continue
+
+        try:
+            bank_name = get_bank_name_from_ifsc(ifsc_code)
+
+            if not numbers_list:
+                failed_items.append(f"{wd_id} -> No phone numbers left in datas/mobile_numbers.txt")
+                continue
+
+            if not emails_list:
+                failed_items.append(f"{wd_id} -> No emails left in datas/gmail_ids.txt")
+                continue
+
+            # Random pick
+            phone_number = random.choice(numbers_list)
+            numbers_list.remove(phone_number)
+
+            email_id = random.choice(emails_list)
+            emails_list.remove(email_id)
+
+            order_id = None
+            response = None
+
+            if selected_gateway == "ba":
+                request_order_id = wd_id if wd_id.startswith("IND-") else f"IND-{wd_id}"
+                response = BA_create_payout_order(
+                    request_order_id,
+                    account_number,
+                    ifsc_code,
+                    int(float(amount)),
+                    bank_name,
+                    beneficiary_name or "NA",
+                    phone_number,
+                    email_id
+                )
+
+                if not isinstance(response, dict):
+                    failed_items.append(f"{wd_id} -> Invalid BA API response")
+                    continue
+
+                if response.get("error"):
+                    failed_items.append(f"{wd_id} -> BA API error: {response.get('error')}")
+                    continue
+
+                msg_data = response.get("msg", {})
+                if not isinstance(msg_data, dict):
+                    failed_items.append(f"{wd_id} -> BA invalid msg format")
+                    continue
+
+                ba_status = str(msg_data.get("status", "")).strip()
+                if ba_status not in ("0", "1"):
+                    failed_items.append(f"{wd_id} -> BA rejected: {response}")
+                    continue
+
+                order_id = msg_data.get("orderid") or response.get("orderid") or request_order_id
+
+            elif selected_gateway == "wln":
+                request_order_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
+                payout_id = f"PORD_{int(time.time() * 1000)}"
+                response = wln_create_payout_payment(
+                    request_order_id,
+                    payout_id,
+                    int(float(amount)),
+                    account_number,
+                    ifsc_code,
+                    bank_name,
+                    beneficiary_name or "NA",
+                    email_id
+                )
+
+                if not isinstance(response, dict):
+                    failed_items.append(f"{wd_id} -> Invalid WLN API response")
+                    continue
+
+                if response.get("error"):
+                    failed_items.append(f"{wd_id} -> WLN API error: {response.get('error')}")
+                    continue
+
+                if response.get("status") is not True:
+                    failed_items.append(f"{wd_id} -> WLN rejected: {response}")
+                    continue
+
+                gateway_status = response.get("gateway", {}).get("gateway_status")
+                if gateway_status not in ("Completed", "Pending"):
+                    failed_items.append(f"{wd_id} -> WLN gateway failed: {response}")
+                    continue
+
+                order_id = response.get("payout_id") or response.get("order_id")
+
+            else:
+                failed_items.append(f"{wd_id} -> Invalid gateway selected")
+                continue
+
+            if not order_id:
+                failed_items.append(f"{wd_id} -> Missing order ID in API response")
+                continue
+
+            mark_withdraw_processing(wd_id, order_id, payment_method)
+            success_items.append(f"{wd_id} -> {order_id}")
+
+        except Exception as e:
+            failed_items.append(f"{wd_id} -> {str(e)}")
+
+    result_parts = [
+        f"✅ Gateway: {payment_method}",
+        f"Total input: {len(withdraw_ids)}",
+        f"Success: {len(success_items)}",
+        f"Failed: {len(failed_items)}",
+    ]
+
+    if success_items:
+        result_parts.append("\nSuccessful creations:")
+        result_parts.extend(success_items[:50])
+        if len(success_items) > 50:
+            result_parts.append(f"...and {len(success_items) - 50} more")
+
+    if failed_items:
+        result_parts.append("\nFailed:")
+        result_parts.extend(failed_items[:20])
+        if len(failed_items) > 20:
+            result_parts.append(f"...and {len(failed_items) - 20} more")
+
+    await query.message.reply_text("\n".join(result_parts))
+    context.user_data.pop("sendwithdraw_ids", None)
+    return ConversationHandler.END
+
+
 async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -436,8 +720,22 @@ conv_handler = ConversationHandler(
     fallbacks=[],
 )
 
+sendwithdraw_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("sendwithdraw", sendwithdraw_start)],
+    states={
+        ASK_SEND_WITHDRAW_IDS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sendwithdraw_ids)
+        ],
+        ASK_SEND_WITHDRAW_GATEWAY: [
+            CallbackQueryHandler(handle_sendwithdraw_gateway, pattern=r"^sendwd_gateway:")
+        ],
+    },
+    fallbacks=[],
+)
+
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
+app.add_handler(sendwithdraw_conv_handler)
 app.add_handler(conv_handler)
 
 print("🤖 Bot is running...")

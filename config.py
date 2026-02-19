@@ -8,9 +8,10 @@ ADMINS = {
 }
 
 # =============== BAPPAVENTURES ===========
-BA_PAYOUT_STATUS_URL = "https://bappaventures.com/api/merchantpayouthistory"
-BA_PAYIN_STATUS_URL = "https://bappaventures.com/api/payinstatus"
-BA_PAYOUT_ORDER_URL = "https://bappaventures.com/api/single_transaction"
+BA_BASE_URL = "https://bappaventures.com"
+BA_PAYOUT_STATUS_URL = BA_BASE_URL + "/api/merchantpayouthistory"
+BA_PAYIN_STATUS_URL = BA_BASE_URL + "/api/payinstatus"
+BA_PAYOUT_ORDER_URL = BA_BASE_URL + "/api/single_transaction"
 
 BA_MERCHANT_ID = "INDIANPAY00INDIANPAY00163"
 BA_MERCHANT_TOKEN = "tcu3fMgf8O0T5VT0raOGxiT7VwXZYgOS"
@@ -22,7 +23,7 @@ TIMEOUT = 30
 WLN_BASE_URL = "https://wellnessgrow.in"
 WLN_STATUS_PAYIN_CHECK_ENDPOINT = "/api/v1/collection-status-check"
 WLN_STATUS_PAYOUT_CHECK_ENDPOINT = "/api/v1/payout-status-check"
-WLN_CREATE_PAYOUT_ENDPOINT = "/api/v1/payout-status-check"
+WLN_CREATE_PAYOUT_ENDPOINT = "/api/v1/payout"
 
 WLN_MERCHANT_ID = "MID940677"
 WLN_API_KEY = "pk_59df0cb68d80ba2d9256b71d85ec719d"
