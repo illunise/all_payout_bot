@@ -22,6 +22,8 @@ from database import (
     get_pending_withdraws,
     get_withdraws_by_ids,
     mark_withdraw_processing,
+    get_processing_withdraws,
+    update_withdraw_status,
 )
 from bappaVenture import BA_check_payout_status, BA_check_payin_status, BA_create_payout_order
 from wellness import (
@@ -117,16 +119,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Payin Status (Wellness)", callback_data="wln_payin_status")]
         )
 
-    if has_permission(user_id, "system_info"):
-        keyboard.append(
-            [InlineKeyboardButton("System Info 🖥", callback_data="system_info")]
-        )
-
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Admin Panel\n\nClick below to download withdraw CSV:",
+        "🛠 *Admin Panel*\n\nChoose an action:",
         reply_markup=reply_markup
+        ,
+        parse_mode="Markdown"
     )
 
 
@@ -181,17 +180,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📝 Please enter Order ID:")
         return ASK_ORDER_ID
 
-    # =============================
-    # Feature: System Info
-    # =============================
-    elif feature == "system_info":
-        info = f"""
-🖥 System Info
------------------
-Working Dir: {os.getcwd()}
-Files: {len(os.listdir())}
-        """
-        await query.edit_message_text(info)
 
 async def handle_withdraw_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -222,13 +210,16 @@ async def handle_withdraw_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     print(result)
 
-    msg = f"*Order ID : {orderid}*\n\n"
-    msg += f"==============================\n\n"
-    msg += f"*Bank Name:* {bankname}\n"
-    msg += f"*IFSC Code:* {ifsc}\n"
-    msg += f"*Bank Account No:* {bank_acc}\n"
-    msg += f"*Amount:* {amount}\n\n"
-    msg += f"==============================\n\n"
+    msg = (
+        "🏦 *BappaVenture Payout Status*\n\n"
+        "============================\n\n"
+        f"*Order ID:* `{orderid}`\n\n"
+        f"*Bank:* {bankname}\n"
+        f"*IFSC:* `{ifsc}`\n"
+        f"*Account:* `{bank_acc}`\n"
+        f"*Amount:* ₹{amount}\n\n"
+        "============================\n\n"
+    )
 
 
     if status == "1":
@@ -272,12 +263,15 @@ async def handle_merchant_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         utr = result.get("utr")
         txn_datetime = result.get("date")
 
-        msg = f"*Transaction ID : {txn_id}*\n\n"
-        msg += "==============================\n\n"
-        msg += f"*UTR:* {utr}\n"
-        msg += f"*Amount:* ₹{amount}\n"
-        msg += f"*Date:* {txn_datetime}\n\n"
-        msg += "==============================\n\n"
+        msg = (
+            "💳 *BappaVenture Payin Status*\n\n"
+            "============================\n\n"
+            f"*Transaction ID:* `{txn_id}`\n\n"
+            f"*UTR:* `{utr}`\n"
+            f"*Amount:* ₹{amount}\n"
+            f"*Date:* {txn_datetime}\n\n"
+            "============================\n\n"
+        )
 
         if status == "success":
             msg += "*Status: ✅ Success*\n"
@@ -326,13 +320,16 @@ async def handle_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txn_datetime = result.get("data", {}).get("datetime")
         txn_id = result.get("data", {}).get("order_id")
 
-        msg = f"*Order ID : {order_id}*\n\n"
-        msg += "==============================\n\n"
-        msg += f"*Transaction ID:* {txn_id}\n"
-        msg += f"*UTR:* {utr}\n"
-        msg += f"*Amount:* ₹{amount}\n"
-        msg += f"*Date:* {txn_datetime}\n\n"
-        msg += "==============================\n\n"
+        msg = (
+            "💠 *Wellness Payin Status*\n\n"
+            "============================\n\n"
+            f"*Order ID:* `{order_id}`\n\n"
+            f"*Transaction ID:* `{txn_id}`\n"
+            f"*UTR:* `{utr}`\n"
+            f"*Amount:* ₹{amount}\n"
+            f"*Date:* {txn_datetime}\n\n"
+            "============================\n\n"
+        )
 
         if status == "Success":
             msg += "*Status: ✅ Success*\n"
@@ -374,7 +371,13 @@ async def sendwithdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["sendwithdraw_ids"] = []
     await update.message.reply_text(
-        "📝 Send withdraw IDs in new lines.\nExample:\nWD-111\nWD-222\nWD-333"
+        "📝 *Send Withdraw IDs*\n"
+        "Send one withdraw ID per line.\n\n"
+        "*Example:*\n"
+        "`WD-111`\n"
+        "`WD-222`\n"
+        "`WD-333`",
+        parse_mode="Markdown"
     )
     return ASK_SEND_WITHDRAW_IDS
 
@@ -397,7 +400,8 @@ async def handle_sendwithdraw_ids(update: Update, context: ContextTypes.DEFAULT_
         ]
     )
     await update.message.reply_text(
-        f"Found {len(withdraw_ids)} IDs.\nSelect gateway:",
+        f"✅ Found *{len(withdraw_ids)}* IDs.\nSelect gateway:",
+        parse_mode="Markdown",
         reply_markup=keyboard
     )
     return ASK_SEND_WITHDRAW_GATEWAY
@@ -427,7 +431,8 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
     await query.edit_message_text(
-        f"⏳ Creating payouts for {len(withdraw_ids)} withdraw IDs via {payment_method}..."
+        f"⏳ Creating payouts for *{len(withdraw_ids)}* withdraw IDs via *{payment_method}*...",
+        parse_mode="Markdown"
     )
 
     rows = get_withdraws_by_ids(withdraw_ids)
@@ -497,25 +502,44 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                     failed_items.append(f"{wd_id} -> Invalid BA API response")
                     continue
 
-                if response.get("error"):
+                msg_data = response.get("msg", {})
+                ba_status_code = str(response.get("status", "")).strip()
+                ba_error_text = str(response.get("error", "")).strip().lower()
+                ba_accepted = ba_error_text in {
+                    "request accepted successfully",
+                    "accepted",
+                    "success",
+                    "ok",
+                    "",
+                }
+
+                # BA success can come as: {"status": 200, "error": "Request Accepted Successfully"}
+                if ba_status_code == "400":
                     failed_items.append(f"{wd_id} -> BA API error: {response.get('error')}")
                     continue
 
-                msg_data = response.get("msg", {})
-                if not isinstance(msg_data, dict):
-                    failed_items.append(f"{wd_id} -> BA invalid msg format")
-                    continue
+                if isinstance(msg_data, dict) and msg_data:
+                    msg_status = str(msg_data.get("status", "")).strip().lower()
+                    ba_msg_success = {"0", "1", "success", "pending", "processing", "true"}
+                    ba_msg_failed = {"3", "failed", "false", "rejected", "error", "declined"}
 
-                ba_status = str(msg_data.get("status", "")).strip()
-                if ba_status not in ("0", "1"):
-                    failed_items.append(f"{wd_id} -> BA rejected: {response}")
-                    continue
+                    if msg_status in ba_msg_failed:
+                        failed_items.append(f"{wd_id} -> BA rejected: {response}")
+                        continue
+                    if msg_status and msg_status not in ba_msg_success:
+                        failed_items.append(f"{wd_id} -> BA unknown status: {response}")
+                        continue
 
-                order_id = msg_data.get("orderid") or response.get("orderid") or request_order_id
+                    order_id = msg_data.get("orderid") or response.get("orderid") or request_order_id
+                elif ba_status_code == "200" and ba_accepted:
+                    order_id = response.get("orderid") or request_order_id
+                else:
+                    failed_items.append(f"{wd_id} -> BA invalid response: {response}")
+                    continue
 
             elif selected_gateway == "wln":
                 request_order_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
-                payout_id = f"PORD_{int(time.time() * 1000)}"
+                payout_id = f"PORD_{int(time.time() * 1000)}_{idx}"
                 response = wln_create_payout_payment(
                     request_order_id,
                     payout_id,
@@ -561,25 +585,26 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             failed_items.append(f"{wd_id} -> {str(e)}")
 
     result_parts = [
-        f"✅ Gateway: {payment_method}",
-        f"Total input: {len(withdraw_ids)}",
-        f"Success: {len(success_items)}",
-        f"Failed: {len(failed_items)}",
+        "📤 *Payout Creation Summary*",
+        f"*Gateway:* {payment_method}",
+        f"*Total Input:* {len(withdraw_ids)}",
+        f"*Success:* {len(success_items)}",
+        f"*Failed:* {len(failed_items)}",
     ]
 
     if success_items:
-        result_parts.append("\nSuccessful creations:")
+        result_parts.append("\n✅ *Successful Creations:*")
         result_parts.extend(success_items[:50])
         if len(success_items) > 50:
             result_parts.append(f"...and {len(success_items) - 50} more")
 
     if failed_items:
-        result_parts.append("\nFailed:")
+        result_parts.append("\n❌ *Failed:*")
         result_parts.extend(failed_items[:20])
         if len(failed_items) > 20:
             result_parts.append(f"...and {len(failed_items) - 20} more")
 
-    await query.message.reply_text("\n".join(result_parts))
+    await query.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
     context.user_data.pop("sendwithdraw_ids", None)
     return ConversationHandler.END
 
@@ -599,7 +624,8 @@ async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError
         except ValueError:
             await update.message.reply_text(
-                "❌ Invalid limit. Use: /pendingwithdraws <amount>\nExample: /pendingwithdraws 5000"
+                "❌ Invalid limit.\n\nUse: `/pendingwithdraws <amount>`\nExample: `/pendingwithdraws 5000`",
+                parse_mode="Markdown"
             )
             return
 
@@ -651,7 +677,7 @@ async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if limit is None:
         ids = [wd_id for wd_id, _, _ in pending_rows if wd_id]
-        summary = f"📝 *Pending Withdraw IDs*\nTotal: {len(ids)}"
+        summary = f"📝 *Pending Withdraw IDs*\n*Total:* {len(ids)}"
         await send_copy_blocks(ids, summary)
         return
 
@@ -675,11 +701,157 @@ async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     summary = (
         f"📌 *Pending Withdraw IDs within cumulative limit ₹{limit:.2f}*\n\n"
-        f"Selected: {len(selected)}\n"
-        f"Total Amount: ₹{running_total:.2f}\n"
-        f"Skipped due to limit: {skipped}"
+        f"*Selected:* {len(selected)}\n"
+        f"*Total Amount:* ₹{running_total:.2f}\n"
+        f"*Skipped:* {skipped}"
     )
     await send_copy_blocks(selected, summary)
+
+
+async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return
+
+    processing_rows = get_processing_withdraws()
+    if not processing_rows:
+        await update.message.reply_text("✅ No processing withdraws found.")
+        return
+
+    ba_success_ids = []
+    ba_failed_ids = []
+    wln_success_ids = []
+    wln_failed_ids = []
+    ba_pending_count = 0
+    wln_pending_count = 0
+    checked_count = 0
+
+    success_states = {"1", "2", "success", "completed", "approved", "done", "paid", "true"}
+    failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false"}
+    pending_states = {"0", "pending", "processing", "inprocess", "queued", "initiated"}
+
+    for withdraw_id, order_id, payment_method in processing_rows:
+        if not withdraw_id or not order_id or not payment_method:
+            continue
+
+        method = str(payment_method).strip().lower()
+        checked_count += 1
+
+        try:
+            if method in ("bappaventure", "ba"):
+                result = BA_check_payout_status(order_id)
+                msg_obj = result.get("msg", {}) if isinstance(result, dict) else {}
+                ba_status = str(msg_obj.get("status", "")).strip().lower()
+
+                if not ba_status:
+                    ba_status = str(result.get("status", "")).strip().lower()
+
+                if ba_status in success_states:
+                    update_withdraw_status(withdraw_id, 2)
+                    ba_success_ids.append(withdraw_id)
+                elif ba_status in failed_states:
+                    update_withdraw_status(withdraw_id, 3)
+                    ba_failed_ids.append(withdraw_id)
+                else:
+                    ba_pending_count += 1
+
+            elif method in ("wellness", "wln"):
+                result = wln_check_payout_payment_status(order_id)
+                data_obj = result.get("data", {}) if isinstance(result, dict) else {}
+                gateway_obj = result.get("gateway", {}) if isinstance(result, dict) else {}
+
+                wln_status = str(data_obj.get("status", "")).strip().lower()
+                if not wln_status:
+                    wln_status = str(result.get("status_code", "")).strip().lower()
+                if not wln_status:
+                    wln_status = str(data_obj.get("payout_status", "")).strip().lower()
+                if not wln_status:
+                    wln_status = str(gateway_obj.get("gateway_status", "")).strip().lower()
+                if not wln_status:
+                    wln_status = str(result.get("status", "")).strip().lower()
+                if not wln_status:
+                    wln_status = str(result.get("message", "")).strip().lower()
+
+                if wln_status in success_states:
+                    update_withdraw_status(withdraw_id, 2)
+                    wln_success_ids.append(withdraw_id)
+                elif wln_status in failed_states:
+                    update_withdraw_status(withdraw_id, 3)
+                    wln_failed_ids.append(withdraw_id)
+                else:
+                    wln_pending_count += 1
+
+        except Exception:
+            if method in ("bappaventure", "ba"):
+                ba_pending_count += 1
+            elif method in ("wellness", "wln"):
+                wln_pending_count += 1
+            continue
+
+    if not ba_success_ids and not ba_failed_ids and not wln_success_ids and not wln_failed_ids:
+        await update.message.reply_text(
+            "ℹ️ No final status update (success/failed) found yet.\n"
+            f"*Checked:* {checked_count}\n"
+            f"*Pending:* {ba_pending_count + wln_pending_count}\n"
+            f"*BappaVenture Pending:* {ba_pending_count}\n"
+            f"*Wellness Pending:* {wln_pending_count}",
+            parse_mode="Markdown"
+        )
+        return
+
+    def build_id_chunks(ids, max_chars=3000):
+        chunks = []
+        current_chunk = []
+        current_len = 0
+
+        for wd_id in ids:
+            line_len = len(wd_id) + 1
+            if current_chunk and current_len + line_len > max_chars:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+            current_chunk.append(wd_id)
+            current_len += line_len
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    async def send_copy_blocks(title, ids):
+        if not ids:
+            return
+
+            await update.message.reply_text(
+                f"*{title}* ({len(ids)})",
+                parse_mode="Markdown"
+            )
+
+        chunks = build_id_chunks(ids)
+        for chunk_ids in chunks:
+            copy_block = "\n" + "\n".join(chunk_ids) + "\n"
+            await update.message.reply_text(
+                f"`{copy_block}`",
+                parse_mode="Markdown"
+            )
+
+    async def send_gateway_report(gateway_name, success_ids, failed_ids):
+        summary = (
+            f"*{gateway_name}*\n"
+            f"✅ Success: {len(success_ids)}\n"
+            f"❌ Failed: {len(failed_ids)}"
+        )
+        await update.message.reply_text(summary, parse_mode="Markdown")
+        await send_copy_blocks(f"{gateway_name} Success IDs", success_ids)
+        await send_copy_blocks(f"{gateway_name} Failed IDs", failed_ids)
+
+    if ba_success_ids or ba_failed_ids:
+        await send_gateway_report("BappaVenture", ba_success_ids, ba_failed_ids)
+
+    if wln_success_ids or wln_failed_ids:
+        await send_gateway_report("Wellness", wln_success_ids, wln_failed_ids)
 
 
 def process_csv_and_save(csv_path):
@@ -735,6 +907,7 @@ sendwithdraw_conv_handler = ConversationHandler(
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
+app.add_handler(CommandHandler("checkstatus", checkstatus))
 app.add_handler(sendwithdraw_conv_handler)
 app.add_handler(conv_handler)
 

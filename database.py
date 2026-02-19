@@ -174,3 +174,40 @@ def mark_withdraw_processing(withdraw_request_id, order_id, payment_method):
 
     conn.commit()
     conn.close()
+
+
+def get_processing_withdraws():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT withdraw_request_id, order_id, payment_method
+        FROM withdraw_requests
+        WHERE status = 1
+        ORDER BY id ASC
+        """
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def update_withdraw_status(withdraw_request_id, status):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE withdraw_requests
+        SET
+            status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE withdraw_request_id = ?
+        """,
+        (status, withdraw_request_id)
+    )
+
+    conn.commit()
+    conn.close()

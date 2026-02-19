@@ -26,10 +26,6 @@ def wln_check_payin_status(order_id: str) -> dict:
 
     data = resp.json()
 
-    if not data.get("status", False):
-        # For 404 or other logical errors, API returns status=false with error
-        raise RuntimeError(f"API error: {data}")
-
     return data
 
 def wln_check_payout_payment_status(payout_id: str) -> dict:
