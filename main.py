@@ -1,5 +1,7 @@
 import os
 import asyncio
+from math import isfinite
+from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,7 +13,7 @@ from telegram.ext import (
     filters
 )
 import csv
-from database import insert_withdraw, init_db
+from database import insert_withdraw, init_db, get_pending_withdraws
 from bappaVenture import BA_check_payout_status, BA_check_payin_status
 from wellness import wln_check_payin_status, wln_check_payout_payment_status
 
@@ -95,7 +97,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             loop = asyncio.get_event_loop()
-            init_db()
             csv_path = await loop.run_in_executor(
                 None, download_withdraw_csv
             )
@@ -299,6 +300,104 @@ async def handle_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return
+
+    limit = None
+    if context.args:
+        try:
+            limit = float(context.args[0])
+            if not isfinite(limit) or limit < 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Invalid limit. Use: /pendingwithdraws <amount>\nExample: /pendingwithdraws 5000"
+            )
+            return
+
+    pending_rows = get_pending_withdraws()
+
+    if not pending_rows:
+        await update.message.reply_text("✅ No pending withdraws found.")
+        return
+
+    def build_id_chunks(ids, max_chars=3000):
+        chunks = []
+        current_chunk = []
+        current_len = 0
+
+        for wd_id in ids:
+            line_len = len(wd_id) + 1
+            if current_chunk and current_len + line_len > max_chars:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+
+            current_chunk.append(wd_id)
+            current_len += line_len
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    async def send_copy_blocks(ids, summary_text):
+        await update.message.reply_text(summary_text, parse_mode="Markdown")
+
+        if not ids:
+            return
+
+        chunks = build_id_chunks(ids)
+        for chunk_ids in chunks:
+            copy_block = "\n".join(chunk_ids)
+            await update.message.reply_text(f"`{copy_block}`", parse_mode="Markdown")
+
+        if len(chunks) > 1:
+            full_copy = "'\n" + "\n".join(ids) + "\n'"
+            file_data = BytesIO(full_copy.encode("utf-8"))
+            file_data.name = "pending_withdraw_ids.txt"
+            await update.message.reply_document(
+                document=file_data,
+                caption="Full ID list in one file."
+            )
+
+    if limit is None:
+        ids = [wd_id for wd_id, _, _ in pending_rows if wd_id]
+        summary = f"📝 *Pending Withdraw IDs*\nTotal: {len(ids)}"
+        await send_copy_blocks(ids, summary)
+        return
+
+    selected = []
+    skipped = 0
+    running_total = 0.0
+    for wd_id, amount, _ in pending_rows:
+        if not wd_id:
+            continue
+        if running_total + amount <= limit:
+            running_total += amount
+            selected.append(f"{wd_id}")
+        else:
+            skipped += 1
+
+    if not selected:
+        await update.message.reply_text(
+            f"⚠️ No pending withdraw can fit within ₹{limit:.2f}."
+        )
+        return
+
+    summary = (
+        f"📌 *Pending Withdraw IDs within cumulative limit ₹{limit:.2f}*\n\n"
+        f"Selected: {len(selected)}\n"
+        f"Total Amount: ₹{running_total:.2f}\n"
+        f"Skipped due to limit: {skipped}"
+    )
+    await send_copy_blocks(selected, summary)
+
+
 def process_csv_and_save(csv_path):
     with open(csv_path, newline='', encoding="utf-8") as file:
         reader = csv.DictReader(file)
@@ -318,6 +417,7 @@ def process_csv_and_save(csv_path):
             insert_withdraw(data)
 
 # Run bot
+init_db()
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 conv_handler = ConversationHandler(
@@ -337,6 +437,7 @@ conv_handler = ConversationHandler(
 )
 
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
 app.add_handler(conv_handler)
 
 print("🤖 Bot is running...")

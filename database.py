@@ -105,3 +105,21 @@ def insert_withdraw(data):
 
     conn.commit()
     conn.close()
+
+
+def get_pending_withdraws():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT withdraw_request_id, amount, status
+        FROM withdraw_requests
+        WHERE status IN (0, 1)
+        ORDER BY id ASC
+        """
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
