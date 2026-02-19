@@ -42,6 +42,8 @@ ASK_MERCHANT_ID = 2
 ASK_ORDER_ID = 3
 ASK_SEND_WITHDRAW_IDS = 4
 ASK_SEND_WITHDRAW_GATEWAY = 5
+PAYOUT_CREATE_DELAY_SEC = 5.0
+STATUS_CHECK_DELAY_SEC = 5.0
 
 # ==================================================
 
@@ -465,6 +467,9 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             continue
 
         try:
+            if idx > 1 and PAYOUT_CREATE_DELAY_SEC > 0:
+                await asyncio.sleep(PAYOUT_CREATE_DELAY_SEC)
+
             bank_name = get_bank_name_from_ifsc(ifsc_code)
 
             if not numbers_list:
@@ -732,7 +737,7 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false"}
     pending_states = {"0", "pending", "processing", "inprocess", "queued", "initiated"}
 
-    for withdraw_id, order_id, payment_method in processing_rows:
+    for idx, (withdraw_id, order_id, payment_method) in enumerate(processing_rows, start=1):
         if not withdraw_id or not order_id or not payment_method:
             continue
 
@@ -740,6 +745,9 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         checked_count += 1
 
         try:
+            if idx > 1 and STATUS_CHECK_DELAY_SEC > 0:
+                await asyncio.sleep(STATUS_CHECK_DELAY_SEC)
+
             if method in ("bappaventure", "ba"):
                 result = BA_check_payout_status(order_id)
                 msg_obj = result.get("msg", {}) if isinstance(result, dict) else {}
@@ -854,6 +862,80 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_gateway_report("Wellness", wln_success_ids, wln_failed_ids)
 
 
+async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return
+
+    processing_rows = get_processing_withdraws()
+    if not processing_rows:
+        await update.message.reply_text("✅ No pending IDs found.")
+        return
+
+    ba_ids = []
+    wln_ids = []
+    unknown_ids = []
+
+    for withdraw_id, _, payment_method in processing_rows:
+        if not withdraw_id:
+            continue
+
+        method = str(payment_method or "").strip().lower()
+        if method in ("bappaventure", "ba"):
+            ba_ids.append(withdraw_id)
+        elif method in ("wellness", "wln"):
+            wln_ids.append(withdraw_id)
+        else:
+            unknown_ids.append(withdraw_id)
+
+    def build_id_chunks(ids, max_chars=3000):
+        chunks = []
+        current_chunk = []
+        current_len = 0
+
+        for wd_id in ids:
+            line_len = len(wd_id) + 1
+            if current_chunk and current_len + line_len > max_chars:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+            current_chunk.append(wd_id)
+            current_len += line_len
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    async def send_pending_group(gateway_name, ids):
+        if not ids:
+            return
+
+        summary = (
+            f"📌 *{gateway_name} Pending IDs*\n\n"
+            f"*Total:* {len(ids)}"
+        )
+        await update.message.reply_text(summary, parse_mode="Markdown")
+
+        for chunk_ids in build_id_chunks(ids):
+            copy_block = "\n" + "\n".join(chunk_ids) + "\n"
+            await update.message.reply_text(
+                f"`{copy_block}`",
+                parse_mode="Markdown"
+            )
+
+    if ba_ids:
+        await send_pending_group("BappaVenture", ba_ids)
+
+    if wln_ids:
+        await send_pending_group("Wellness", wln_ids)
+
+    if unknown_ids:
+        await send_pending_group("Unknown Gateway", unknown_ids)
+
+
 def process_csv_and_save(csv_path):
     with open(csv_path, newline='', encoding="utf-8") as file:
         reader = csv.DictReader(file)
@@ -907,6 +989,7 @@ sendwithdraw_conv_handler = ConversationHandler(
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
+app.add_handler(CommandHandler("pendingids", pending_ids))
 app.add_handler(CommandHandler("checkstatus", checkstatus))
 app.add_handler(sendwithdraw_conv_handler)
 app.add_handler(conv_handler)
