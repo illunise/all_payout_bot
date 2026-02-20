@@ -578,8 +578,8 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                     continue
 
             elif selected_gateway == "wln":
-                request_order_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
-                payout_id = f"PORD_{int(time.time() * 1000)}_{idx}"
+                request_order_id = f"PORD_{int(time.time() * 1000)}_{idx}"
+                payout_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
                 response = wln_create_payout_payment(
                     request_order_id,
                     payout_id,
@@ -597,11 +597,6 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
                 if response.get("error"):
                     failed_items.append(f"{wd_id} -> WLN API error: {response.get('error')}")
-                    continue
-
-                gateway_status = response.get("gateway", {}).get("gateway_status")
-                if gateway_status not in ("Completed", "Pending"):
-                    failed_items.append(f"{wd_id} -> WLN gateway failed: {response}")
                     continue
 
                 order_id = response.get("payout_id") or response.get("order_id")

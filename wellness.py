@@ -148,17 +148,13 @@ def wln_create_payout_payment(
     except ValueError:
         raise RuntimeError(f"Invalid JSON response: {resp.text}")
 
-    # Check main API status
-    if not data.get("status"):
-        raise RuntimeError(f"API Error: {data.get('message', 'Unknown error')}")
-
     # Optional: Validate gateway status
     gateway_status = (
         data.get("gateway", {})
         .get("gateway_status")
     )
 
-    if gateway_status not in ["Completed", "Pending"]:
+    if gateway_status not in ["Completed", "Pending", "pending", "completed"]:
         raise RuntimeError(f"Gateway Failed: {data}")
 
     return data
