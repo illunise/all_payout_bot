@@ -6,6 +6,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
@@ -13,37 +14,42 @@ DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 EMAIL = "superadmin@fantasyadda.com"
 PASSWORD = "Aditya@2005"
 
-CHROMEDRIVER_PATH = "/usr/bin/chromedriver"
-CHROME_BINARY = "/usr/bin/chromium-browser"
 
 def download_withdraw_csv(timeout=60):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
     before_files = set(os.listdir(DOWNLOAD_DIR))
 
-    chrome_options = Options()
-    chrome_options.binary_location = CHROME_BINARY
+    options = Options()
 
-    # ✅ Required for VPS
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
+    # VPS required flags
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
 
-    chrome_options.add_experimental_option(
-        "prefs",
-        {
-            "download.default_directory": DOWNLOAD_DIR,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "safebrowsing.enabled": True
-        }
-    )
+    prefs = {
+        "download.default_directory": DOWNLOAD_DIR,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+    }
+
+    options.add_experimental_option("prefs", prefs)
 
     driver = webdriver.Chrome(
-        service=Service(CHROMEDRIVER_PATH),
-        options=chrome_options
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
+
+    # 🔥 VERY IMPORTANT for headless download
+    driver.execute_cdp_cmd(
+        "Page.setDownloadBehavior",
+        {
+            "behavior": "allow",
+            "downloadPath": DOWNLOAD_DIR
+        }
     )
 
     try:
