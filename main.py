@@ -831,6 +831,17 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ No processing withdraws found.")
         return
 
+    total_rows = sum(1 for withdraw_id, order_id, payment_method in processing_rows if withdraw_id and order_id and payment_method)
+    if total_rows == 0:
+        await update.message.reply_text("ℹ️ Processing rows found, but none had valid withdraw_id/order_id/payment_method.")
+        return
+    progress_message = await update.message.reply_text(
+        "🔄 *Check Status Started*\n"
+        f"*Total Processing IDs:* {total_rows}\n"
+        "Step 1/3: Preparing checks...",
+        parse_mode="Markdown"
+    )
+
     ba_success_ids = []
     ba_failed_ids = []
     wln_success_ids = []
@@ -838,6 +849,8 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ba_pending_count = 0
     wln_pending_count = 0
     checked_count = 0
+    processed_count = 0
+    progress_step = max(1, total_rows // 10)
 
     success_states = {"1", "2", "success", "completed", "approved", "done", "paid", "true"}
     failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false"}
@@ -849,6 +862,19 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         method = str(payment_method).strip().lower()
         checked_count += 1
+        processed_count += 1
+
+        if processed_count == 1 or processed_count % progress_step == 0 or processed_count == total_rows:
+            gateway_name = "BappaVenture" if method in ("bappaventure", "ba") else "Wellness" if method in ("wellness", "wln") else "Unknown"
+            await progress_message.edit_text(
+                "🔄 *Check Status Running*\n"
+                f"*Total Processing IDs:* {total_rows}\n"
+                f"*Progress:* {processed_count}/{total_rows}\n"
+                f"*Current ID:* `{withdraw_id}`\n"
+                f"*Gateway:* {gateway_name}\n"
+                "Step 2/3: Checking payout status...",
+                parse_mode="Markdown"
+            )
 
         try:
             if idx > 1 and STATUS_CHECK_DELAY_SEC > 0:
@@ -905,6 +931,12 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
 
     if not ba_success_ids and not ba_failed_ids and not wln_success_ids and not wln_failed_ids:
+        await progress_message.edit_text(
+            "✅ *Check Status Completed*\n"
+            f"*Processed:* {processed_count}/{total_rows}\n"
+            "Step 3/3: Final summary sent below.",
+            parse_mode="Markdown"
+        )
         await update.message.reply_text(
             "ℹ️ No final status update (success/failed) found yet.\n"
             f"*Checked:* {checked_count}\n"
@@ -966,6 +998,13 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if wln_success_ids or wln_failed_ids:
         await send_gateway_report("Wellness", wln_success_ids, wln_failed_ids)
+
+    await progress_message.edit_text(
+        "✅ *Check Status Completed*\n"
+        f"*Processed:* {processed_count}/{total_rows}\n"
+        "Step 3/3: Final summary sent below.",
+        parse_mode="Markdown"
+    )
 
 
 async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
