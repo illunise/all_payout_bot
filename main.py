@@ -919,15 +919,25 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_ids.append(wd_id)
 
     result_parts = [
-        "📤 *Payout Creation Summary*",
-        f"*Gateway:* {payment_method}",
-        f"*Input Limit:* ₹{limit:.2f}",
-        f"*Total Selected:* {len(selected_rows)}",
-        f"*Selected Amount:* ₹{selected_total:.2f}",
-        f"*Min Amount Filter:* {('₹%.2f' % min_amount) if min_amount is not None else 'Not set'}",
-        f"*Max Amount Filter:* {('₹%.2f' % max_amount) if max_amount is not None else 'Not set'}",
-        f"*Success:* {len(success_items)}",
-        f"*Failed:* {len(failed_items)}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "📤 *PAYOUT CREATION SUMMARY*",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+
+        "\n🏦 *Gateway Information*",
+        f"• Gateway           : {payment_method}",
+        f"• Input Limit       : ₹{limit:,.2f}",
+
+        "\n📊 *Selection Details*",
+        f"• Total Selected    : {len(selected_rows)}",
+        f"• Selected Amount   : ₹{selected_total:,.2f}",
+        f"• Min Amount Filter : {('₹%.2f' % min_amount) if min_amount is not None else 'Not Set'}",
+        f"• Max Amount Filter : {('₹%.2f' % max_amount) if max_amount is not None else 'Not Set'}",
+
+        "\n📈 *Execution Result*",
+        f"• ✅ Success         : {len(success_items)}",
+        f"• ❌ Failed          : {len(failed_items)}",
+
+        "━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
     try:
