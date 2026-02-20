@@ -3,6 +3,7 @@ import asyncio
 import time
 import requests
 import random
+import logging
 from math import isfinite
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -35,6 +36,12 @@ from wellness import (
 
 from downloader import download_withdraw_csv
 from config import *
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ================= CONSTANT =======================
 
@@ -83,6 +90,32 @@ def load_file_lines(filepath: str) -> list:
         raise RuntimeError(f"{filepath} is empty")
 
     return lines
+
+
+def split_text_chunks(text: str, max_chars: int = 3500) -> list:
+    if not text:
+        return []
+
+    chunks = []
+    current = []
+    current_len = 0
+
+    for line in text.splitlines():
+        line_with_newline = line + "\n"
+        line_len = len(line_with_newline)
+
+        if current and current_len + line_len > max_chars:
+            chunks.append("".join(current).rstrip())
+            current = []
+            current_len = 0
+
+        current.append(line_with_newline)
+        current_len += line_len
+
+    if current:
+        chunks.append("".join(current).rstrip())
+
+    return chunks
 
 # ==================================================
 
@@ -260,14 +293,12 @@ async def handle_payout_order_id(update: Update, context: ContextTypes.DEFAULT_T
         ).strip().lower()
 
         amount = data_obj.get("amount") or "0"
-        status_code = data_obj.get("status_code") or "NA"
-
         msg = (
             "💎 *WELLNESS PAYOUT STATUS*\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
             f"🆔 *Order ID:* `{data_obj.get('order_id', 'NA')}`\n"
-            f"🔗 *Gateway Ref:* `{status_code}`\n"
+            f"🆔 *Payout ID:* `{data_obj.get('payout_id', 'NA')}`\n\n"
             f"💰 *Amount:* `₹{amount}`\n"
             f"🕒 *Created At:* `{data_obj.get('created_at', 'NA')}`\n\n"
         )
@@ -566,6 +597,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         f"⏳ Creating payouts for *{len(withdraw_ids)}* withdraw IDs via *{payment_method}*...",
         parse_mode="Markdown"
     )
+    progress_message = query.message
 
     rows = get_withdraws_by_ids(withdraw_ids)
     row_map = {}
@@ -585,8 +617,37 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
     loop = asyncio.get_event_loop()
+    total_withdraw_ids = len(withdraw_ids)
+    processed_count = 0
+    progress_step = max(1, total_withdraw_ids // 10)
 
     for idx, wd_id in enumerate(withdraw_ids, start=1):
+        processed_count += 1
+
+        if processed_count == 1 or processed_count % progress_step == 0 or processed_count == total_withdraw_ids:
+            try:
+                await progress_message.edit_text(
+                    "🚀 *PAYOUT CREATION IN PROGRESS*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+                    "📊 *Processing Overview*\n"
+                    f"• Total Requests : `{total_withdraw_ids}`\n"
+                    f"• Completed      : `{processed_count}/{total_withdraw_ids}`\n\n"
+
+                    "🆔 *Current Withdraw ID*\n"
+                    f"`{wd_id}`\n\n"
+
+                    f"🏦 *Gateway:* `{payment_method}`\n\n"
+
+                    "⏳ *Step 2 of 3*\n"
+                    "_Creating payout request at gateway..._\n\n"
+
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
         row = row_map.get(wd_id)
         if not row:
             failed_items.append(f"{wd_id} -> Not found in DB")
@@ -724,19 +785,46 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         f"*Failed:* {len(failed_items)}",
     ]
 
-    if success_items:
-        result_parts.append("\n✅ *Successful Creations:*")
-        result_parts.extend(success_items[:100])
-        if len(success_items) > 100:
-            result_parts.append(f"...and {len(success_items) - 100} more")
-
-    if failed_items:
-        result_parts.append("\n❌ *Failed:*")
-        result_parts.extend(failed_items[:70])
-        if len(failed_items) > 70:
-            result_parts.append(f"...and {len(failed_items) - 70} more")
+    try:
+        await progress_message.edit_text(
+            "✅ *Payout Creation Completed*\n"
+            f"*Gateway:* {payment_method}\n"
+            f"*Processed:* {processed_count}/{total_withdraw_ids}\n"
+            "Step 3/3: Final summary sent below.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
 
     await query.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
+
+    detail_lines = []
+    if success_items:
+        detail_lines.append("SUCCESSFUL CREATIONS")
+        detail_lines.extend(success_items)
+        detail_lines.append("")
+    if failed_items:
+        detail_lines.append("FAILED")
+        detail_lines.extend(failed_items)
+
+    if detail_lines:
+        details_text = "\n".join(detail_lines).strip()
+        chunks = split_text_chunks(details_text, max_chars=3500)
+
+        if len(chunks) == 1:
+            await query.message.reply_text(chunks[0])
+        else:
+            await query.message.reply_text(f"📄 Sending details in {len(chunks)} parts.")
+            for idx, chunk in enumerate(chunks, start=1):
+                await query.message.reply_text(f"Part {idx}/{len(chunks)}\n\n{chunk}")
+
+            details_file = BytesIO(details_text.encode("utf-8"))
+            details_file.name = "payout_creation_details.txt"
+            await query.message.reply_document(
+                document=details_file,
+                caption="Full payout creation details"
+            )
+
     context.user_data.pop("sendwithdraw_ids", None)
     return ConversationHandler.END
 
@@ -1132,6 +1220,18 @@ def process_csv_and_save(csv_path):
 
             insert_withdraw(data)
 
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+    try:
+        if update and getattr(update, "effective_chat", None):
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Something went wrong while processing your request. Please try again."
+            )
+    except Exception:
+        pass
+
 # Run bot
 init_db()
 app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1171,6 +1271,7 @@ app.add_handler(CommandHandler("pendingids", pending_ids))
 app.add_handler(CommandHandler("checkstatus", checkstatus))
 app.add_handler(sendwithdraw_conv_handler)
 app.add_handler(conv_handler)
+app.add_error_handler(error_handler)
 
 print("🤖 Bot is running...")
 app.run_polling()
