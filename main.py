@@ -243,7 +243,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 None, download_withdraw_csv
             )
 
-            process_csv_and_save(csv_path)
+            total_ids = process_csv_and_save(csv_path)
 
             await status.edit_text("📤 Sending file...")
 
@@ -253,7 +253,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     filename=os.path.basename(csv_path)
                 )
 
-            await status.edit_text("✅ CSV Sent Successfully!")
+            await status.edit_text(f"{total_ids} IDs Saved in Database\n\n✅ CSV Sent Successfully!")
 
         except Exception as e:
             await status.edit_text(f"❌ Error:\n{str(e)}")
@@ -1141,10 +1141,12 @@ async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def process_csv_and_save(csv_path):
+    total_ids = 0
     with open(csv_path, newline='', encoding="utf-8") as file:
         reader = csv.DictReader(file)
 
         for row in reader:
+            total_ids += 1
             data = {
                 "withdraw_request_id": row["Withdraw Request Id"],
                 "beneficiary_name": row["Benificiary Name"],
@@ -1157,6 +1159,8 @@ def process_csv_and_save(csv_path):
             }
 
             insert_withdraw(data)
+
+    return total_ids
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
