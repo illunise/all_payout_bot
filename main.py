@@ -156,8 +156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🛠 *Admin Panel*\n\nChoose an action:",
-        reply_markup=reply_markup
-        ,
+        reply_markup=reply_markup,
         parse_mode="Markdown"
     )
 
