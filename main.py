@@ -21,6 +21,7 @@ from database import (
     init_db,
     get_pending_withdraws,
     get_withdraws_by_ids,
+    get_withdraw_by_id,
     mark_withdraw_processing,
     get_processing_withdraws,
     update_withdraw_status,
@@ -39,6 +40,7 @@ from config import *
 
 ASK_PAYOUT_ORDER_ID = 1
 ASK_PAYIN_ORDER_ID = 2
+ASK_SEARCH_WITHDRAW_ID = 3
 ASK_SEND_WITHDRAW_IDS = 4
 ASK_SEND_WITHDRAW_GATEWAY = 5
 PAYOUT_CREATE_DELAY_SEC = 5.0
@@ -111,6 +113,16 @@ def detect_payout_gateway(order_id: str) -> str:
     return "ba"
 
 
+def format_withdraw_status(status_code) -> str:
+    mapping = {
+        0: "Created",
+        1: "Processing",
+        2: "Success",
+        3: "Failed",
+    }
+    return mapping.get(status_code, f"Unknown ({status_code})")
+
+
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -136,6 +148,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(
             [InlineKeyboardButton("Payout Check", callback_data="payout_status")]
         )
+        keyboard.append(
+            [InlineKeyboardButton("Search Withdraw ID", callback_data="search_withdraw")]
+        )
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -160,6 +175,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⛔ You don't have permission for this feature.")
             return
     elif feature == "payout_status":
+        if not can_check_payout(user_id):
+            await query.edit_message_text("⛔ You don't have permission for this feature.")
+            return
+    elif feature == "search_withdraw":
         if not can_check_payout(user_id):
             await query.edit_message_text("⛔ You don't have permission for this feature.")
             return
@@ -201,6 +220,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif feature == "payout_status":
         await query.edit_message_text("📝 Please enter Payout Order ID:")
         return ASK_PAYOUT_ORDER_ID
+
+    elif feature == "search_withdraw":
+        await query.edit_message_text("📝 Please enter Withdraw ID:")
+        return ASK_SEARCH_WITHDRAW_ID
 
 
 async def handle_payout_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,6 +408,64 @@ async def handle_payin_order_id(update: Update, context: ContextTypes.DEFAULT_TY
 
     await sent_message.delete()
 
+    return ConversationHandler.END
+
+
+async def handle_search_withdraw_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not can_check_payout(user_id):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return ConversationHandler.END
+
+    withdraw_id = (update.message.text or "").strip()
+    if not withdraw_id:
+        await update.message.reply_text("❌ Withdraw ID is required. Please enter a valid ID.")
+        return ASK_SEARCH_WITHDRAW_ID
+
+    row = get_withdraw_by_id(withdraw_id)
+    if not row:
+        await update.message.reply_text(f"❌ Withdraw ID not found: `{withdraw_id}`", parse_mode="Markdown")
+        return ConversationHandler.END
+
+    (
+        withdraw_request_id,
+        beneficiary_name,
+        account_number,
+        ifsc_code,
+        amount,
+        status,
+        order_id,
+        payment_method,
+        created_at,
+        updated_at,
+    ) = row
+
+    msg = (
+        "💸 *WITHDRAW REQUEST DETAILS*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"🆔 *Withdraw ID:* `{withdraw_request_id}`\n"
+        f"📊 *Status:* `{format_withdraw_status(status)}`\n"
+        f"💰 *Amount:* `₹{amount:,.2f}`\n\n"
+
+        "👤 *Beneficiary Information*\n"
+        "──────────────────\n"
+        f"🏦 *Name:* `{beneficiary_name or 'NA'}`\n"
+        f"🔢 *Account No:* `{account_number or 'NA'}`\n"
+        f"🏛 *IFSC Code:* `{ifsc_code or 'NA'}`\n"
+        f"💳 *Payment Method:* `{payment_method or 'NA'}`\n\n"
+
+        "📦 *Transaction Info*\n"
+        "──────────────────\n"
+        f"🧾 *Order ID:* `{order_id or 'NA'}`\n"
+        f"🕒 *Created At:* `{created_at or 'NA'}`\n"
+        f"🔄 *Updated At:* `{updated_at or 'NA'}`\n"
+
+        "\n━━━━━━━━━━━━━━━━━━"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
     return ConversationHandler.END
 
 def parse_withdraw_ids(raw_text: str):
@@ -992,6 +1073,9 @@ conv_handler = ConversationHandler(
         ],
         ASK_PAYIN_ORDER_ID: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payin_order_id)
+        ],
+        ASK_SEARCH_WITHDRAW_ID: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search_withdraw_id)
         ],
     },
     fallbacks=[],

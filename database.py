@@ -64,7 +64,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 def insert_withdraw(data):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -106,7 +105,6 @@ def insert_withdraw(data):
     conn.commit()
     conn.close()
 
-
 def get_pending_withdraws():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -123,7 +121,6 @@ def get_pending_withdraws():
     rows = cursor.fetchall()
     conn.close()
     return rows
-
 
 def get_withdraws_by_ids(withdraw_ids):
     if not withdraw_ids:
@@ -155,6 +152,34 @@ def get_withdraws_by_ids(withdraw_ids):
     return rows
 
 
+def get_withdraw_by_id(withdraw_request_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            withdraw_request_id,
+            beneficiary_name,
+            account_number,
+            ifsc_code,
+            amount,
+            status,
+            order_id,
+            payment_method,
+            created_at,
+            updated_at
+        FROM withdraw_requests
+        WHERE withdraw_request_id = ?
+        LIMIT 1
+        """,
+        (withdraw_request_id,)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
 def mark_withdraw_processing(withdraw_request_id, order_id, payment_method):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -175,7 +200,6 @@ def mark_withdraw_processing(withdraw_request_id, order_id, payment_method):
     conn.commit()
     conn.close()
 
-
 def get_processing_withdraws():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -192,7 +216,6 @@ def get_processing_withdraws():
     rows = cursor.fetchall()
     conn.close()
     return rows
-
 
 def update_withdraw_status(withdraw_request_id, status):
     conn = sqlite3.connect(DB_NAME)
