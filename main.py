@@ -250,33 +250,48 @@ async def handle_payout_order_id(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text(f"❌ Error:\n{str(e)}")
             return ConversationHandler.END
 
-        data_obj = result.get("data", {}) if isinstance(result, dict) else {}
-        gateway_obj = result.get("gateway", {}) if isinstance(result, dict) else {}
-        status = str(data_obj.get("status") or data_obj.get("payout_status") or gateway_obj.get("gateway_status") or "").strip().lower()
-        amount = data_obj.get("amount") or result.get("amount")
-        gateway_ref = result.get("gateway_ref") or gateway_obj.get("gateway_ref")
+        data_obj = result if isinstance(result, dict) else {}
+
+        status = str(
+            data_obj.get("status_code")
+            or data_obj.get("status")
+            or data_obj.get("payout_status")
+            or ""
+        ).strip().lower()
+
+        amount = data_obj.get("amount") or "0"
+        status_code = data_obj.get("status_code") or "NA"
+
         msg = (
-            "💠 *Wellness Payout Status*\n\n"
-            "============================\n\n"
-            f"*Payout ID:* `{order_id}`\n\n"
-            f"*Gateway Ref:* `{gateway_ref}`\n"
-            f"*Amount:* ₹{amount}\n\n"
-            "============================\n\n"
+            "💎 *WELLNESS PAYOUT STATUS*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+            f"🆔 *Order ID:* `{data_obj.get('order_id', 'NA')}`\n"
+            f"🔗 *Gateway Ref:* `{status_code}`\n"
+            f"💰 *Amount:* `₹{amount}`\n"
+            f"🕒 *Created At:* `{data_obj.get('created_at', 'NA')}`\n\n"
         )
 
         if status in ("success", "completed"):
-            msg += "*Status: ✅ Success*\n"
+            msg += "📊 *Status:* ✅ *SUCCESS*\n"
         elif status in ("failed", "rejected"):
-            msg += "*Status: ❌ Failed*\n"
+            msg += "📊 *Status:* ❌ *FAILED*\n"
         elif status in ("pending", "processing", "initiated"):
-            msg += "*Status: ⏱ Pending*\n"
+            msg += "📊 *Status:* ⏳ *PENDING*\n"
         else:
-            msg += "*Status: ⚠️ Unknown*\n"
+            msg += f"📊 *Status:* ⚠️ *{status.upper() or 'UNKNOWN'}*\n"
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━━━"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
         return ConversationHandler.END
 
-    result = BA_check_payout_status(order_id)
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, BA_check_payout_status, order_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error:\n{str(e)}")
+        return ConversationHandler.END
 
     status = result.get("msg", {}).get("status")
 
@@ -569,6 +584,8 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         context.user_data.pop("sendwithdraw_ids", None)
         return ConversationHandler.END
 
+    loop = asyncio.get_event_loop()
+
     for idx, wd_id in enumerate(withdraw_ids, start=1):
         row = row_map.get(wd_id)
         if not row:
@@ -585,7 +602,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             if idx > 1 and PAYOUT_CREATE_DELAY_SEC > 0:
                 await asyncio.sleep(PAYOUT_CREATE_DELAY_SEC)
 
-            bank_name = get_bank_name_from_ifsc(ifsc_code)
+            bank_name = await loop.run_in_executor(None, get_bank_name_from_ifsc, ifsc_code)
 
             if not numbers_list:
                 failed_items.append(f"{wd_id} -> No phone numbers left in datas/mobile_numbers.txt")
@@ -607,7 +624,9 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
             if selected_gateway == "ba":
                 request_order_id = wd_id if wd_id.startswith("IND-") else f"IND-{wd_id}"
-                response = BA_create_payout_order(
+                response = await loop.run_in_executor(
+                    None,
+                    BA_create_payout_order,
                     request_order_id,
                     account_number,
                     ifsc_code,
@@ -660,7 +679,9 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             elif selected_gateway == "wln":
                 request_order_id = f"PORD_{int(time.time() * 1000)}_{idx}"
                 payout_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
-                response = wln_create_payout_payment(
+                response = await loop.run_in_executor(
+                    None,
+                    wln_create_payout_payment,
                     request_order_id,
                     payout_id,
                     int(float(amount)),
@@ -856,6 +877,8 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false"}
     pending_states = {"0", "pending", "processing", "inprocess", "queued", "initiated"}
 
+    loop = asyncio.get_event_loop()
+
     for idx, (withdraw_id, order_id, payment_method) in enumerate(processing_rows, start=1):
         if not withdraw_id or not order_id or not payment_method:
             continue
@@ -867,12 +890,22 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if processed_count == 1 or processed_count % progress_step == 0 or processed_count == total_rows:
             gateway_name = "BappaVenture" if method in ("bappaventure", "ba") else "Wellness" if method in ("wellness", "wln") else "Unknown"
             await progress_message.edit_text(
-                "🔄 *Check Status Running*\n"
-                f"*Total Processing IDs:* {total_rows}\n"
-                f"*Progress:* {processed_count}/{total_rows}\n"
-                f"*Current ID:* `{withdraw_id}`\n"
-                f"*Gateway:* {gateway_name}\n"
-                "Step 2/3: Checking payout status...",
+                "🔄 *PAYOUT STATUS CHECK IN PROGRESS*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+                "📊 *Processing Summary*\n"
+                f"• Total Requests : `{total_rows}`\n"
+                f"• Completed      : `{processed_count}/{total_rows}`\n\n"
+
+                "🆔 *Current Withdraw ID*\n"
+                f"`{withdraw_id}`\n\n"
+
+                f"🏦 *Gateway:* `{gateway_name}`\n\n"
+
+                "⏳ *Step 2 of 3*\n"
+                "_Checking payout status from gateway..._\n\n"
+
+                "━━━━━━━━━━━━━━━━━━━━━━",
                 parse_mode="Markdown"
             )
 
@@ -881,7 +914,7 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(STATUS_CHECK_DELAY_SEC)
 
             if method in ("bappaventure", "ba"):
-                result = BA_check_payout_status(order_id)
+                result = await loop.run_in_executor(None, BA_check_payout_status, order_id)
                 msg_obj = result.get("msg", {}) if isinstance(result, dict) else {}
                 ba_status = str(msg_obj.get("status", "")).strip().lower()
 
@@ -898,7 +931,7 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ba_pending_count += 1
 
             elif method in ("wellness", "wln"):
-                result = wln_check_payout_payment_status(order_id)
+                result = await loop.run_in_executor(None, wln_check_payout_payment_status, order_id)
                 data_obj = result.get("data", {}) if isinstance(result, dict) else {}
                 gateway_obj = result.get("gateway", {}) if isinstance(result, dict) else {}
 
