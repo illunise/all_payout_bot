@@ -115,7 +115,7 @@ def get_pending_withdraws():
         """
         SELECT withdraw_request_id, amount, status
         FROM withdraw_requests
-        WHERE status IN (0, 1)
+        WHERE status IN (0)
         ORDER BY id ASC
         """
     )
