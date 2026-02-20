@@ -87,9 +87,18 @@ def insert_withdraw(data):
             account_number = excluded.account_number,
             ifsc_code = excluded.ifsc_code,
             amount = excluded.amount,
-            status = excluded.status,
-            order_id = excluded.order_id,
-            payment_method = excluded.payment_method,
+            status = CASE
+                WHEN withdraw_requests.status IN (1, 2, 3) THEN withdraw_requests.status
+                ELSE excluded.status
+            END,
+            order_id = CASE
+                WHEN COALESCE(withdraw_requests.order_id, '') != '' THEN withdraw_requests.order_id
+                ELSE excluded.order_id
+            END,
+            payment_method = CASE
+                WHEN COALESCE(withdraw_requests.payment_method, '') != '' THEN withdraw_requests.payment_method
+                ELSE excluded.payment_method
+            END,
             updated_at = CURRENT_TIMESTAMP
     """, (
         data["withdraw_request_id"],

@@ -48,8 +48,6 @@ logger = logging.getLogger(__name__)
 ASK_PAYOUT_ORDER_ID = 1
 ASK_PAYIN_ORDER_ID = 2
 ASK_SEARCH_WITHDRAW_ID = 3
-ASK_SEND_WITHDRAW_IDS = 4
-ASK_SEND_WITHDRAW_GATEWAY = 5
 PAYOUT_CREATE_DELAY_SEC = 5.0
 STATUS_CHECK_DELAY_SEC = 5.0
 
@@ -123,6 +121,19 @@ async def send_ids_txt(reply_target, ids: list, filename: str, caption: str) -> 
         return
 
     file_content = "\n".join(str(x) for x in ids if x is not None and str(x).strip())
+    if not file_content:
+        return
+
+    file_data = BytesIO(file_content.encode("utf-8"))
+    file_data.name = filename
+    await reply_target.reply_document(document=file_data, caption=caption)
+
+
+async def send_lines_txt(reply_target, lines: list, filename: str, caption: str) -> None:
+    if not lines:
+        return
+
+    file_content = "\n".join(str(x) for x in lines if x is not None and str(x).strip())
     if not file_content:
         return
 
@@ -526,155 +537,235 @@ async def handle_search_withdraw_id(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(msg, parse_mode="Markdown")
     return ConversationHandler.END
 
-def parse_withdraw_ids(raw_text: str):
-    lines = raw_text.replace("\r", "\n").split("\n")
-    ids = []
+def load_withdraw_rows_from_csv(csv_path: str):
+    rows = []
+    with open(csv_path, newline='', encoding="utf-8") as file:
+        reader = csv.DictReader(file)
 
-    for line in lines:
-        wd_id = line.strip().strip("`").strip("'").strip('"').strip(",")
-        if wd_id and wd_id not in ids:
-            ids.append(wd_id)
+        for row in reader:
+            wd_id = str(row.get("Withdraw Request Id", "")).strip()
+            if not wd_id:
+                continue
 
-    return ids
+            try:
+                amount = float(row.get("Amount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+
+            rows.append(
+                {
+                    "withdraw_request_id": wd_id,
+                    "beneficiary_name": str(row.get("Benificiary Name", "")).strip(),
+                    "account_number": str(row.get("Benificiary Account number", "")).strip(),
+                    "ifsc_code": str(row.get("IFSC Code", "")).strip(),
+                    "amount": amount,
+                }
+            )
+
+    return rows
 
 
-async def sendwithdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def select_withdraw_ids_with_limit(withdraw_rows, limit: float, min_amount=None, max_amount=None):
+    selected = []
+    skipped = 0
+    running_total = 0.0
+    seen = set()
+
+    for row in reversed(withdraw_rows):
+        wd_id = row["withdraw_request_id"]
+        amount_value = row["amount"]
+
+        if wd_id in seen:
+            continue
+        seen.add(wd_id)
+
+        if not wd_id:
+            continue
+
+        if min_amount is not None and amount_value < min_amount:
+            skipped += 1
+            continue
+
+        if max_amount is not None and amount_value > max_amount:
+            skipped += 1
+            continue
+
+        if running_total + amount_value <= limit:
+            running_total += amount_value
+            selected.append(row)
+        else:
+            skipped += 1
+
+    return selected, running_total, skipped
+
+
+async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not has_permission(user_id, "ba_payout_status"):
         await update.message.reply_text("⛔ You don't have permission.")
-        return ConversationHandler.END
+        return
 
-    context.user_data["sendwithdraw_ids"] = []
-    await update.message.reply_text(
-        "📝 *Send Withdraw IDs*\n"
-        "Send one withdraw ID per line.\n\n"
-        "*Example:*\n"
-        "`WD-111`\n"
-        "`WD-222`\n"
-        "`WD-333`",
-        parse_mode="Markdown"
-    )
-    return ASK_SEND_WITHDRAW_IDS
-
-
-async def handle_sendwithdraw_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    withdraw_ids = parse_withdraw_ids(update.message.text or "")
-
-    if not withdraw_ids:
+    if not context.args:
         await update.message.reply_text(
-            "❌ No valid IDs found. Send one withdraw ID per line."
+            "❌ Invalid command.\n\n"
+            "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`\n\n"
+            "Examples:\n"
+            "`/sendwithdraw 200000`\n"
+            "`/sendwithdraw 200000 ba 500 30000`\n"
+            "`/sendwithdraw 200000 wln 500`\n"
+            "Default gateway: `ba`",
+            parse_mode="Markdown"
         )
-        return ASK_SEND_WITHDRAW_IDS
+        return
 
-    context.user_data["sendwithdraw_ids"] = withdraw_ids
+    try:
+        limit = float(context.args[0])
+        if not isfinite(limit) or limit <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid amount.\n\n"
+            "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`\n"
+            "Example: `/sendwithdraw 200000 ba 500 30000`",
+            parse_mode="Markdown"
+        )
+        return
 
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("BappaVenture", callback_data="sendwd_gateway:ba")],
-            [InlineKeyboardButton("Wellness", callback_data="sendwd_gateway:wln")],
-        ]
-    )
-    await update.message.reply_text(
-        f"✅ Found *{len(withdraw_ids)}* IDs.\nSelect gateway:",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-    return ASK_SEND_WITHDRAW_GATEWAY
+    args_tail = list(context.args[1:])
+    selected_gateway = "ba"
+    if args_tail and args_tail[0].strip().lower() in {"ba", "wln"}:
+        selected_gateway = args_tail.pop(0).strip().lower()
 
+    if selected_gateway not in {"ba", "wln"}:
+        await update.message.reply_text(
+            "❌ Invalid gateway.\nUse: `ba` or `wln`.\n\nExample: `/sendwithdraw 200000 ba`",
+            parse_mode="Markdown"
+        )
+        return
 
-async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    min_amount = None
+    max_amount = None
+    if args_tail:
+        if len(args_tail) > 2:
+            await update.message.reply_text(
+                "❌ Too many arguments.\n\n"
+                "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`",
+                parse_mode="Markdown"
+            )
+            return
 
-    user_id = query.from_user.id
-    if not has_permission(user_id, "ba_payout_status"):
-        await query.edit_message_text("⛔ You don't have permission.")
-        return ConversationHandler.END
+        try:
+            if len(args_tail) == 1:
+                min_amount = float(args_tail[0])
+            else:
+                min_amount = float(args_tail[0])
+                max_amount = float(args_tail[1])
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Invalid range values.\n\n"
+                "Use numeric values:\n"
+                "`/sendwithdraw 200000 ba 500 30000`",
+                parse_mode="Markdown"
+            )
+            return
 
-    selected_gateway = query.data.split(":", 1)[1]
-    payment_method = None
+        if min_amount is not None and min_amount < 0:
+            await update.message.reply_text("❌ `min_amount` cannot be negative.", parse_mode="Markdown")
+            return
+        if max_amount is not None and max_amount < 0:
+            await update.message.reply_text("❌ `max_amount` cannot be negative.", parse_mode="Markdown")
+            return
+        if max_amount is not None and min_amount is not None and min_amount > max_amount:
+            await update.message.reply_text("❌ `min_amount` cannot be greater than `max_amount`.", parse_mode="Markdown")
+            return
 
-    if selected_gateway == "ba":
-        payment_method = "BappaVenture"
-    elif selected_gateway == "wln":
-        payment_method = "Wellness"
-
-    withdraw_ids = context.user_data.get("sendwithdraw_ids", [])
-
-    if not withdraw_ids:
-        await query.edit_message_text("❌ No withdraw IDs found. Please run /sendwithdraw again.")
-        return ConversationHandler.END
-
-    await query.edit_message_text(
-        f"⏳ Creating payouts for *{len(withdraw_ids)}* withdraw IDs via *{payment_method}*...",
+    payment_method = "BappaVenture" if selected_gateway == "ba" else "Wellness"
+    progress_message = await update.message.reply_text(
+        "⏳ *Send Withdraw Started*\n"
+        "Step 1/4: Downloading latest CSV...",
         parse_mode="Markdown"
     )
-    progress_message = query.message
 
-    rows = get_withdraws_by_ids(withdraw_ids)
-    row_map = {}
-    for row in rows:
-        row_map[row[0]] = row
+    try:
+        loop = asyncio.get_event_loop()
+        csv_path = await loop.run_in_executor(None, download_withdraw_csv)
+        csv_rows = load_withdraw_rows_from_csv(csv_path)
+        selected_rows, selected_total, skipped = select_withdraw_ids_with_limit(
+            csv_rows,
+            limit,
+            min_amount=min_amount,
+            max_amount=max_amount,
+        )
+    except Exception as e:
+        await progress_message.edit_text(f"❌ Failed during CSV sync: {str(e)}")
+        return
+
+    if not selected_rows:
+        await progress_message.edit_text(
+            "⚠️ No withdraws selected after CSV sync.\n"
+            f"Limit: ₹{limit:.2f}",
+        )
+        return
+
+    await progress_message.edit_text(
+        "✅ *CSV Synced*\n"
+        f"Step 2/4 complete.\n"
+        "• Pick Order: `Bottom to Top (latest rows first)`\n"
+        f"• CSV Rows Read: `{len(csv_rows)}`\n"
+        f"• Selected IDs: `{len(selected_rows)}`\n"
+        f"• Selected Total: `₹{selected_total:.2f}`\n"
+        f"• Min Amount Filter: `{(f'₹{min_amount:.2f}' if min_amount is not None else 'Not set')}`\n"
+        f"• Max Amount Filter: `{(f'₹{max_amount:.2f}' if max_amount is not None else 'Not set')}`\n"
+        f"• Skipped: `{skipped}`\n"
+        f"• Gateway: `{payment_method}`\n\n"
+        "Step 3/4: Creating payouts...",
+        parse_mode="Markdown"
+    )
 
     success_items = []
     failed_items = []
     success_ids = []
     failed_ids = []
 
-    # Load numbers & emails once
     try:
         numbers_list = load_file_lines("datas/mobile_numbers.txt")
         emails_list = load_file_lines("datas/gmail_ids.txt")
     except Exception as e:
-        await query.message.reply_text(f"❌ Setup error: {str(e)}")
-        context.user_data.pop("sendwithdraw_ids", None)
-        return ConversationHandler.END
+        await progress_message.edit_text(f"❌ Setup error: {str(e)}")
+        return
 
-    loop = asyncio.get_event_loop()
-    total_withdraw_ids = len(withdraw_ids)
+    total_withdraw_ids = len(selected_rows)
     processed_count = 0
     progress_step = max(1, total_withdraw_ids // 10)
 
-    for idx, wd_id in enumerate(withdraw_ids, start=1):
+    for idx, row in enumerate(selected_rows, start=1):
         processed_count += 1
+        wd_id = row["withdraw_request_id"]
 
         if processed_count == 1 or processed_count % progress_step == 0 or processed_count == total_withdraw_ids:
             try:
                 await progress_message.edit_text(
                     "🚀 *PAYOUT CREATION IN PROGRESS*\n"
                     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
                     "📊 *Processing Overview*\n"
                     f"• Total Requests : `{total_withdraw_ids}`\n"
                     f"• Completed      : `{processed_count}/{total_withdraw_ids}`\n\n"
-
                     "🆔 *Current Withdraw ID*\n"
                     f"`{wd_id}`\n\n"
-
                     f"🏦 *Gateway:* `{payment_method}`\n\n"
-
-                    "⏳ *Step 2 of 3*\n"
+                    "⏳ *Step 3 of 4*\n"
                     "_Creating payout request at gateway..._\n\n"
-
                     "━━━━━━━━━━━━━━━━━━━━━━",
                     parse_mode="Markdown"
                 )
             except Exception:
                 pass
 
-        row = row_map.get(wd_id)
-        if not row:
-            failed_items.append(f"{wd_id} -> Not found in DB")
-            failed_ids.append(wd_id)
-            continue
-
-        _, beneficiary_name, account_number, ifsc_code, amount, status, _, _ = row
-
-        if status not in (0, 1):
-            failed_items.append(f"{wd_id} -> Status {status}, skipped")
-            failed_ids.append(wd_id)
-            continue
+        beneficiary_name = row["beneficiary_name"]
+        account_number = row["account_number"]
+        ifsc_code = row["ifsc_code"]
+        amount = row["amount"]
 
         try:
             if idx > 1 and PAYOUT_CREATE_DELAY_SEC > 0:
@@ -684,13 +775,14 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
             if not numbers_list:
                 failed_items.append(f"{wd_id} -> No phone numbers left in datas/mobile_numbers.txt")
+                failed_ids.append(wd_id)
                 continue
 
             if not emails_list:
                 failed_items.append(f"{wd_id} -> No emails left in datas/gmail_ids.txt")
+                failed_ids.append(wd_id)
                 continue
 
-            # Random pick
             phone_number = random.choice(numbers_list)
             numbers_list.remove(phone_number)
 
@@ -698,7 +790,6 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             emails_list.remove(email_id)
 
             order_id = None
-            response = None
 
             if selected_gateway == "ba":
                 request_order_id = wd_id if wd_id.startswith("IND-") else f"IND-{wd_id}"
@@ -723,15 +814,8 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                 msg_data = response.get("msg", {})
                 ba_status_code = str(response.get("status", "")).strip()
                 ba_error_text = str(response.get("error", "")).strip().lower()
-                ba_accepted = ba_error_text in {
-                    "request accepted successfully",
-                    "accepted",
-                    "success",
-                    "ok",
-                    "",
-                }
+                ba_accepted = ba_error_text in {"request accepted successfully", "accepted", "success", "ok", ""}
 
-                # BA success can come as: {"status": 200, "error": "Request Accepted Successfully"}
                 if ba_status_code == "400":
                     failed_items.append(f"{wd_id} -> BA API error: {response.get('error')}")
                     failed_ids.append(wd_id)
@@ -759,7 +843,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                     failed_ids.append(wd_id)
                     continue
 
-            elif selected_gateway == "wln":
+            else:
                 request_order_id = f"PORD_{int(time.time() * 1000)}_{idx}"
                 payout_id = wd_id if wd_id.startswith("WLN-") else f"WLN-{wd_id}"
                 response = await loop.run_in_executor(
@@ -787,17 +871,23 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
                 order_id = response.get("payout_id") or response.get("order_id")
 
-            else:
-                failed_items.append(f"{wd_id} -> Invalid gateway selected")
-                failed_ids.append(wd_id)
-                continue
-
             if not order_id:
                 failed_items.append(f"{wd_id} -> Missing order ID in API response")
                 failed_ids.append(wd_id)
                 continue
 
-            mark_withdraw_processing(wd_id, order_id, payment_method)
+            insert_withdraw(
+                {
+                    "withdraw_request_id": wd_id,
+                    "beneficiary_name": beneficiary_name,
+                    "account_number": account_number,
+                    "ifsc_code": ifsc_code,
+                    "amount": float(amount),
+                    "status": 1,
+                    "order_id": order_id,
+                    "payment_method": payment_method,
+                }
+            )
             success_items.append(f"{wd_id} -> {order_id}")
             success_ids.append(wd_id)
 
@@ -808,7 +898,11 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
     result_parts = [
         "📤 *Payout Creation Summary*",
         f"*Gateway:* {payment_method}",
-        f"*Total Input:* {len(withdraw_ids)}",
+        f"*Input Limit:* ₹{limit:.2f}",
+        f"*Total Selected:* {len(selected_rows)}",
+        f"*Selected Amount:* ₹{selected_total:.2f}",
+        f"*Min Amount Filter:* {('₹%.2f' % min_amount) if min_amount is not None else 'Not set'}",
+        f"*Max Amount Filter:* {('₹%.2f' % max_amount) if max_amount is not None else 'Not set'}",
         f"*Success:* {len(success_items)}",
         f"*Failed:* {len(failed_items)}",
     ]
@@ -818,28 +912,15 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
             "✅ *Payout Creation Completed*\n"
             f"*Gateway:* {payment_method}\n"
             f"*Processed:* {processed_count}/{total_withdraw_ids}\n"
-            "Step 3/3: Final summary sent below.",
+            "Step 4/4: Final summary sent below.",
             parse_mode="Markdown"
         )
     except Exception:
         pass
 
-    await query.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
-    await send_ids_txt(
-        query.message,
-        success_ids,
-        "payout_success_ids.txt",
-        "Success withdraw IDs"
-    )
-    await send_ids_txt(
-        query.message,
-        failed_ids,
-        "payout_failed_ids.txt",
-        "Failed withdraw IDs"
-    )
-
-    context.user_data.pop("sendwithdraw_ids", None)
-    return ConversationHandler.END
+    await update.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
+    await send_ids_txt(update.message, success_ids, "payout_success_ids.txt", "Success withdraw IDs")
+    await send_lines_txt(update.message, failed_items, "payout_failed_ids.txt", "Failed withdraw IDs with errors")
 
 
 async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1194,24 +1275,11 @@ conv_handler = ConversationHandler(
     fallbacks=[],
 )
 
-sendwithdraw_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("sendwithdraw", sendwithdraw_start)],
-    states={
-        ASK_SEND_WITHDRAW_IDS: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sendwithdraw_ids)
-        ],
-        ASK_SEND_WITHDRAW_GATEWAY: [
-            CallbackQueryHandler(handle_sendwithdraw_gateway, pattern=r"^sendwd_gateway:")
-        ],
-    },
-    fallbacks=[],
-)
-
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
 app.add_handler(CommandHandler("pendingids", pending_ids))
 app.add_handler(CommandHandler("checkstatus", checkstatus))
-app.add_handler(sendwithdraw_conv_handler)
+app.add_handler(CommandHandler("sendwithdraw", sendwithdraw))
 app.add_handler(conv_handler)
 app.add_error_handler(error_handler)
 
