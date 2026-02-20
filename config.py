@@ -3,8 +3,10 @@ BOT_TOKEN = "8598932456:AAHCnZkqfYPJvtkwpyDM7TQtl-wObAF2kH0"
 ADMIN_ID = 6169351376
 
 ADMINS = {
-    6169351376: ["download_csv", "ba_payout_status", "ba_payin_status", "wln_payin_status", "system_info"],
-    8412466614: ["download_csv"],
+    6169351376: ["download_csv", "ba_payout_status", "ba_payin_status", "wln_payin_status"],
+    8412466614: ["ba_payout_status", "ba_payin_status", "wln_payin_status"],
+    7262970488: ["ba_payout_status", "ba_payin_status", "wln_payin_status"],
+    1961970741: ["ba_payout_status", "ba_payin_status", "wln_payin_status"],
 }
 
 # =============== BAPPAVENTURES ===========
