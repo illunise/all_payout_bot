@@ -144,6 +144,7 @@ def wln_create_payout_payment(
     # Parse JSON safely
     try:
         data = resp.json()
+        print(data)
     except ValueError:
         raise RuntimeError(f"Invalid JSON response: {resp.text}")
 
