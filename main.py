@@ -37,9 +37,8 @@ from config import *
 
 # ================= CONSTANT =======================
 
-ASK_WITHDRAW_ID = 1
-ASK_MERCHANT_ID = 2
-ASK_ORDER_ID = 3
+ASK_PAYOUT_ORDER_ID = 1
+ASK_PAYIN_ORDER_ID = 2
 ASK_SEND_WITHDRAW_IDS = 4
 ASK_SEND_WITHDRAW_GATEWAY = 5
 PAYOUT_CREATE_DELAY_SEC = 5.0
@@ -90,6 +89,28 @@ def has_permission(user_id, feature):
     return feature in ADMINS.get(user_id, [])
 
 
+def can_check_payin(user_id) -> bool:
+    return has_permission(user_id, "ba_payin_status") or has_permission(user_id, "wln_payin_status")
+
+
+def can_check_payout(user_id) -> bool:
+    return has_permission(user_id, "ba_payout_status")
+
+
+def detect_payin_gateway(order_id: str) -> str:
+    oid = (order_id or "").strip().upper()
+    if oid.startswith("WLN") or oid.startswith("WNL"):
+        return "wln"
+    return "ba"
+
+
+def detect_payout_gateway(order_id: str) -> str:
+    oid = (order_id or "").strip().upper()
+    if oid.startswith("PORD_") or oid.startswith("WLN") or oid.startswith("WNL"):
+        return "wln"
+    return "ba"
+
+
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -106,19 +127,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Download CSV 📥", callback_data="download_csv")]
         )
 
-    if has_permission(user_id, "ba_payin_status"):
+    if can_check_payin(user_id):
         keyboard.append(
-            [InlineKeyboardButton("Payin Status (BappaVenture)", callback_data="ba_payin_status")]
+            [InlineKeyboardButton("Payin Check", callback_data="payin_status")]
         )
 
-    if has_permission(user_id, "ba_payout_status"):
+    if can_check_payout(user_id):
         keyboard.append(
-            [InlineKeyboardButton("Payout Status (BappaVenture)", callback_data="ba_payout_status")]
-        )
-
-    if has_permission(user_id, "wln_payin_status"):
-        keyboard.append(
-            [InlineKeyboardButton("Payin Status (Wellness)", callback_data="wln_payin_status")]
+            [InlineKeyboardButton("Payout Check", callback_data="payout_status")]
         )
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -139,7 +155,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
-    if not has_permission(user_id, feature):
+    if feature == "payin_status":
+        if not can_check_payin(user_id):
+            await query.edit_message_text("⛔ You don't have permission for this feature.")
+            return
+    elif feature == "payout_status":
+        if not can_check_payout(user_id):
+            await query.edit_message_text("⛔ You don't have permission for this feature.")
+            return
+    elif not has_permission(user_id, feature):
         await query.edit_message_text("⛔ You don't have permission for this feature.")
         return
 
@@ -170,36 +194,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await status.edit_text(f"❌ Error:\n{str(e)}")
 
-    elif feature == "ba_payin_status":
-        await query.edit_message_text("📝 Please enter Merchant ID:")
-        return ASK_MERCHANT_ID
+    elif feature == "payin_status":
+        await query.edit_message_text("📝 Please enter Payin Order ID:")
+        return ASK_PAYIN_ORDER_ID
 
-    elif feature == "ba_payout_status":
-        await query.edit_message_text("📝 Please enter Withdraw ID:")
-        return ASK_WITHDRAW_ID
-
-    elif feature == "wln_payin_status":
-        await query.edit_message_text("📝 Please enter Order ID:")
-        return ASK_ORDER_ID
+    elif feature == "payout_status":
+        await query.edit_message_text("📝 Please enter Payout Order ID:")
+        return ASK_PAYOUT_ORDER_ID
 
 
-async def handle_withdraw_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_payout_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if not has_permission(user_id, "ba_payout_status"):
+    if not can_check_payout(user_id):
         await update.message.reply_text("⛔ You don't have permission.")
         return ConversationHandler.END
 
-    raw_id = update.message.text.strip()
+    raw_order_id = update.message.text.strip()
+    gateway = detect_payout_gateway(raw_order_id)
 
-    if raw_id.startswith("IND-"):
-        withdraw_id = raw_id
+    if gateway == "wln":
+        order_id = raw_order_id
     else:
-        withdraw_id = f"IND-{raw_id}"
+        order_id = raw_order_id if raw_order_id.startswith("IND-") else f"IND-{raw_order_id}"
 
-    await update.message.reply_text(f"🔍 Checking payout status for ID: {withdraw_id}")
+    await update.message.reply_text(f"🔍 Detected `{gateway.upper()}` gateway. Checking payout status for: {order_id}", parse_mode="Markdown")
 
-    result = BA_check_payout_status(withdraw_id)
+    if gateway == "wln":
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, wln_check_payout_payment_status, order_id)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error:\n{str(e)}")
+            return ConversationHandler.END
+
+        data_obj = result.get("data", {}) if isinstance(result, dict) else {}
+        gateway_obj = result.get("gateway", {}) if isinstance(result, dict) else {}
+        status = str(data_obj.get("status") or data_obj.get("payout_status") or gateway_obj.get("gateway_status") or "").strip().lower()
+        amount = data_obj.get("amount") or result.get("amount")
+        gateway_ref = result.get("gateway_ref") or gateway_obj.get("gateway_ref")
+        msg = (
+            "💠 *Wellness Payout Status*\n\n"
+            "============================\n\n"
+            f"*Payout ID:* `{order_id}`\n\n"
+            f"*Gateway Ref:* `{gateway_ref}`\n"
+            f"*Amount:* ₹{amount}\n\n"
+            "============================\n\n"
+        )
+
+        if status in ("success", "completed"):
+            msg += "*Status: ✅ Success*\n"
+        elif status in ("failed", "rejected"):
+            msg += "*Status: ❌ Failed*\n"
+        elif status in ("pending", "processing", "initiated"):
+            msg += "*Status: ⏱ Pending*\n"
+        else:
+            msg += "*Status: ⚠️ Unknown*\n"
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return ConversationHandler.END
+
+    result = BA_check_payout_status(order_id)
 
     status = result.get("msg", {}).get("status")
 
@@ -238,109 +293,90 @@ async def handle_withdraw_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     return ConversationHandler.END
 
-async def handle_merchant_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_payin_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    if not has_permission(user_id, "ba_payin_status"):
-        await update.message.reply_text("⛔ You don't have permission.")
-        return ConversationHandler.END
-
-    merchant_id = update.message.text.strip()
-
-    sent_message = await update.message.reply_text(f"🔍 Checking payin status for Merchant ID: {merchant_id}")
-
-    try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            BA_check_payin_status,
-            merchant_id
-        )
-
-        print(result)
-
-        status = result.get("status")
-        txn_id = result.get("transactionid")
-        amount = result.get("amount")
-        utr = result.get("utr")
-        txn_datetime = result.get("date")
-
-        msg = (
-            "💳 *BappaVenture Payin Status*\n\n"
-            "============================\n\n"
-            f"*Transaction ID:* `{txn_id}`\n\n"
-            f"*UTR:* `{utr}`\n"
-            f"*Amount:* ₹{amount}\n"
-            f"*Date:* {txn_datetime}\n\n"
-            "============================\n\n"
-        )
-
-        if status == "success":
-            msg += "*Status: ✅ Success*\n"
-        elif status == "failed":
-            msg += "*Status: ❌ Failed*\n"
-        elif status == "pending":
-            msg += "*Status: ⏱ Pending*\n"
-        else:
-            msg += "*Status: ⚠️ Unknown*\n"
-
-        await update.message.reply_text(msg, parse_mode="Markdown")
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error:\n{str(e)}")
-
-    await sent_message.delete()
-
-    return ConversationHandler.END
-
-async def handle_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not has_permission(user_id, "wln_payin_status"):
+    if not can_check_payin(user_id):
         await update.message.reply_text("⛔ You don't have permission.")
         return ConversationHandler.END
 
     order_id = update.message.text.strip()
+    gateway = detect_payin_gateway(order_id)
+
+    if gateway == "wln" and not has_permission(user_id, "wln_payin_status"):
+        await update.message.reply_text("⛔ You don't have Wellness payin permission.")
+        return ConversationHandler.END
+
+    if gateway == "ba" and not has_permission(user_id, "ba_payin_status"):
+        await update.message.reply_text("⛔ You don't have BappaVenture payin permission.")
+        return ConversationHandler.END
 
     sent_message = await update.message.reply_text(
-        f"🔍 Checking Wellness payin status for Order ID: {order_id}"
+        f"🔍 Detected `{gateway.upper()}` gateway. Checking payin status for Order ID: {order_id}",
+        parse_mode="Markdown"
     )
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            wln_check_payin_status,
-            order_id
-        )
+        if gateway == "wln":
+            result = await loop.run_in_executor(None, wln_check_payin_status, order_id)
+        else:
+            result = await loop.run_in_executor(None, BA_check_payin_status, order_id)
 
         print(result)
 
-        status = result.get("data", {}).get("status")
-        amount = result.get("data", {}).get("amount")
-        utr = result.get("data", {}).get("utr")
-        txn_datetime = result.get("data", {}).get("datetime")
-        txn_id = result.get("data", {}).get("order_id")
+        if gateway == "wln":
+            status = result.get("data", {}).get("status")
+            amount = result.get("data", {}).get("amount")
+            utr = result.get("data", {}).get("utr")
+            txn_datetime = result.get("data", {}).get("datetime")
+            txn_id = result.get("data", {}).get("order_id")
 
-        msg = (
-            "💠 *Wellness Payin Status*\n\n"
-            "============================\n\n"
-            f"*Order ID:* `{order_id}`\n\n"
-            f"*Transaction ID:* `{txn_id}`\n"
-            f"*UTR:* `{utr}`\n"
-            f"*Amount:* ₹{amount}\n"
-            f"*Date:* {txn_datetime}\n\n"
-            "============================\n\n"
-        )
+            msg = (
+                "💠 *Wellness Payin Status*\n\n"
+                "============================\n\n"
+                f"*Order ID:* `{order_id}`\n\n"
+                f"*Transaction ID:* `{txn_id}`\n"
+                f"*UTR:* `{utr}`\n"
+                f"*Amount:* ₹{amount}\n"
+                f"*Date:* {txn_datetime}\n\n"
+                "============================\n\n"
+            )
 
-        if status == "Success":
-            msg += "*Status: ✅ Success*\n"
-        elif status == "Failed":
-            msg += "*Status: ❌ Failed*\n"
-        elif status == "Pending":
-            msg += "*Status: ⏱ Pending*\n"
+            if status == "Success":
+                msg += "*Status: ✅ Success*\n"
+            elif status == "Failed":
+                msg += "*Status: ❌ Failed*\n"
+            elif status == "Pending":
+                msg += "*Status: ⏱ Pending*\n"
+            else:
+                msg += "*Status: ⚠️ Unknown*\n"
         else:
-            msg += "*Status: ⚠️ Unknown*\n"
+            status = result.get("status")
+            txn_id = result.get("transactionid")
+            amount = result.get("amount")
+            utr = result.get("utr")
+            txn_datetime = result.get("date")
+
+            msg = (
+                "💳 *BappaVenture Payin Status*\n\n"
+                "============================\n\n"
+                f"*Order ID:* `{order_id}`\n"
+                f"*Transaction ID:* `{txn_id}`\n\n"
+                f"*UTR:* `{utr}`\n"
+                f"*Amount:* ₹{amount}\n"
+                f"*Date:* {txn_datetime}\n\n"
+                "============================\n\n"
+            )
+
+            if status == "success":
+                msg += "*Status: ✅ Success*\n"
+            elif status == "failed":
+                msg += "*Status: ❌ Failed*\n"
+            elif status == "pending":
+                msg += "*Status: ⏱ Pending*\n"
+            else:
+                msg += "*Status: ⚠️ Unknown*\n"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -350,7 +386,6 @@ async def handle_order_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sent_message.delete()
 
     return ConversationHandler.END
-
 
 def parse_withdraw_ids(raw_text: str):
     lines = raw_text.replace("\r", "\n").split("\n")
@@ -564,10 +599,6 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                     failed_items.append(f"{wd_id} -> WLN API error: {response.get('error')}")
                     continue
 
-                if response.get("status") is not True:
-                    failed_items.append(f"{wd_id} -> WLN rejected: {response}")
-                    continue
-
                 gateway_status = response.get("gateway", {}).get("gateway_status")
                 if gateway_status not in ("Completed", "Pending"):
                     failed_items.append(f"{wd_id} -> WLN gateway failed: {response}")
@@ -599,15 +630,15 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
     if success_items:
         result_parts.append("\n✅ *Successful Creations:*")
-        result_parts.extend(success_items[:50])
-        if len(success_items) > 50:
-            result_parts.append(f"...and {len(success_items) - 50} more")
+        result_parts.extend(success_items[:100])
+        if len(success_items) > 100:
+            result_parts.append(f"...and {len(success_items) - 100} more")
 
     if failed_items:
         result_parts.append("\n❌ *Failed:*")
-        result_parts.extend(failed_items[:20])
-        if len(failed_items) > 20:
-            result_parts.append(f"...and {len(failed_items) - 20} more")
+        result_parts.extend(failed_items[:70])
+        if len(failed_items) > 70:
+            result_parts.append(f"...and {len(failed_items) - 70} more")
 
     await query.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
     context.user_data.pop("sendwithdraw_ids", None)
@@ -961,14 +992,11 @@ app = ApplicationBuilder().token(BOT_TOKEN).build()
 conv_handler = ConversationHandler(
     entry_points=[CallbackQueryHandler(button_handler)],
     states={
-        ASK_WITHDRAW_ID: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_withdraw_id)
+        ASK_PAYOUT_ORDER_ID: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payout_order_id)
         ],
-        ASK_MERCHANT_ID: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_merchant_id)
-        ],
-        ASK_ORDER_ID: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_order_id)
+        ASK_PAYIN_ORDER_ID: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payin_order_id)
         ],
     },
     fallbacks=[],
