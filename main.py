@@ -117,6 +117,19 @@ def split_text_chunks(text: str, max_chars: int = 3500) -> list:
 
     return chunks
 
+
+async def send_ids_txt(reply_target, ids: list, filename: str, caption: str) -> None:
+    if not ids:
+        return
+
+    file_content = "\n".join(str(x) for x in ids if x is not None and str(x).strip())
+    if not file_content:
+        return
+
+    file_data = BytesIO(file_content.encode("utf-8"))
+    file_data.name = filename
+    await reply_target.reply_document(document=file_data, caption=caption)
+
 # ==================================================
 
 # 🔐 Check permission
@@ -606,6 +619,8 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
     success_items = []
     failed_items = []
+    success_ids = []
+    failed_ids = []
 
     # Load numbers & emails once
     try:
@@ -651,12 +666,14 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         row = row_map.get(wd_id)
         if not row:
             failed_items.append(f"{wd_id} -> Not found in DB")
+            failed_ids.append(wd_id)
             continue
 
         _, beneficiary_name, account_number, ifsc_code, amount, status, _, _ = row
 
         if status not in (0, 1):
             failed_items.append(f"{wd_id} -> Status {status}, skipped")
+            failed_ids.append(wd_id)
             continue
 
         try:
@@ -700,6 +717,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
                 if not isinstance(response, dict):
                     failed_items.append(f"{wd_id} -> Invalid BA API response")
+                    failed_ids.append(wd_id)
                     continue
 
                 msg_data = response.get("msg", {})
@@ -716,6 +734,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                 # BA success can come as: {"status": 200, "error": "Request Accepted Successfully"}
                 if ba_status_code == "400":
                     failed_items.append(f"{wd_id} -> BA API error: {response.get('error')}")
+                    failed_ids.append(wd_id)
                     continue
 
                 if isinstance(msg_data, dict) and msg_data:
@@ -725,9 +744,11 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
                     if msg_status in ba_msg_failed:
                         failed_items.append(f"{wd_id} -> BA rejected: {response}")
+                        failed_ids.append(wd_id)
                         continue
                     if msg_status and msg_status not in ba_msg_success:
                         failed_items.append(f"{wd_id} -> BA unknown status: {response}")
+                        failed_ids.append(wd_id)
                         continue
 
                     order_id = msg_data.get("orderid") or response.get("orderid") or request_order_id
@@ -735,6 +756,7 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
                     order_id = response.get("orderid") or request_order_id
                 else:
                     failed_items.append(f"{wd_id} -> BA invalid response: {response}")
+                    failed_ids.append(wd_id)
                     continue
 
             elif selected_gateway == "wln":
@@ -755,27 +777,33 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
 
                 if not isinstance(response, dict):
                     failed_items.append(f"{wd_id} -> Invalid WLN API response")
+                    failed_ids.append(wd_id)
                     continue
 
                 if response.get("error"):
                     failed_items.append(f"{wd_id} -> WLN API error: {response.get('error')}")
+                    failed_ids.append(wd_id)
                     continue
 
                 order_id = response.get("payout_id") or response.get("order_id")
 
             else:
                 failed_items.append(f"{wd_id} -> Invalid gateway selected")
+                failed_ids.append(wd_id)
                 continue
 
             if not order_id:
                 failed_items.append(f"{wd_id} -> Missing order ID in API response")
+                failed_ids.append(wd_id)
                 continue
 
             mark_withdraw_processing(wd_id, order_id, payment_method)
             success_items.append(f"{wd_id} -> {order_id}")
+            success_ids.append(wd_id)
 
         except Exception as e:
             failed_items.append(f"{wd_id} -> {str(e)}")
+            failed_ids.append(wd_id)
 
     result_parts = [
         "📤 *Payout Creation Summary*",
@@ -797,33 +825,18 @@ async def handle_sendwithdraw_gateway(update: Update, context: ContextTypes.DEFA
         pass
 
     await query.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
-
-    detail_lines = []
-    if success_items:
-        detail_lines.append("SUCCESSFUL CREATIONS")
-        detail_lines.extend(success_items)
-        detail_lines.append("")
-    if failed_items:
-        detail_lines.append("FAILED")
-        detail_lines.extend(failed_items)
-
-    if detail_lines:
-        details_text = "\n".join(detail_lines).strip()
-        chunks = split_text_chunks(details_text, max_chars=3500)
-
-        if len(chunks) == 1:
-            await query.message.reply_text(chunks[0])
-        else:
-            await query.message.reply_text(f"📄 Sending details in {len(chunks)} parts.")
-            for idx, chunk in enumerate(chunks, start=1):
-                await query.message.reply_text(f"Part {idx}/{len(chunks)}\n\n{chunk}")
-
-            details_file = BytesIO(details_text.encode("utf-8"))
-            details_file.name = "payout_creation_details.txt"
-            await query.message.reply_document(
-                document=details_file,
-                caption="Full payout creation details"
-            )
+    await send_ids_txt(
+        query.message,
+        success_ids,
+        "payout_success_ids.txt",
+        "Success withdraw IDs"
+    )
+    await send_ids_txt(
+        query.message,
+        failed_ids,
+        "payout_failed_ids.txt",
+        "Failed withdraw IDs"
+    )
 
     context.user_data.pop("sendwithdraw_ids", None)
     return ConversationHandler.END
@@ -855,45 +868,14 @@ async def pending_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ No pending withdraws found.")
         return
 
-    def build_id_chunks(ids, max_chars=3000):
-        chunks = []
-        current_chunk = []
-        current_len = 0
-
-        for wd_id in ids:
-            line_len = len(wd_id) + 1
-            if current_chunk and current_len + line_len > max_chars:
-                chunks.append(current_chunk)
-                current_chunk = []
-                current_len = 0
-
-            current_chunk.append(wd_id)
-            current_len += line_len
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
-
     async def send_copy_blocks(ids, summary_text):
         await update.message.reply_text(summary_text, parse_mode="Markdown")
-
-        if not ids:
-            return
-
-        chunks = build_id_chunks(ids)
-        for chunk_ids in chunks:
-            copy_block = "\n".join(chunk_ids)
-            await update.message.reply_text(f"`{copy_block}`", parse_mode="Markdown")
-
-        if len(chunks) > 1:
-            full_copy = "'\n" + "\n".join(ids) + "\n'"
-            file_data = BytesIO(full_copy.encode("utf-8"))
-            file_data.name = "pending_withdraw_ids.txt"
-            await update.message.reply_document(
-                document=file_data,
-                caption="Full ID list in one file."
-            )
+        await send_ids_txt(
+            update.message,
+            ids,
+            "pending_withdraw_ids.txt",
+            "Pending withdraw IDs"
+        )
 
     if limit is None:
         ids = [wd_id for wd_id, _, _ in pending_rows if wd_id]
@@ -1068,41 +1050,16 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    def build_id_chunks(ids, max_chars=3000):
-        chunks = []
-        current_chunk = []
-        current_len = 0
-
-        for wd_id in ids:
-            line_len = len(wd_id) + 1
-            if current_chunk and current_len + line_len > max_chars:
-                chunks.append(current_chunk)
-                current_chunk = []
-                current_len = 0
-            current_chunk.append(wd_id)
-            current_len += line_len
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
-
     async def send_copy_blocks(title, ids):
         if not ids:
             return
-
-            await update.message.reply_text(
-                f"*{title}* ({len(ids)})",
-                parse_mode="Markdown"
-            )
-
-        chunks = build_id_chunks(ids)
-        for chunk_ids in chunks:
-            copy_block = "\n" + "\n".join(chunk_ids) + "\n"
-            await update.message.reply_text(
-                f"`{copy_block}`",
-                parse_mode="Markdown"
-            )
+        safe_name = title.lower().replace(" ", "_")
+        await send_ids_txt(
+            update.message,
+            ids,
+            f"{safe_name}.txt",
+            f"{title} ({len(ids)})"
+        )
 
     async def send_gateway_report(gateway_name, success_ids, failed_ids):
         summary = (
@@ -1156,25 +1113,6 @@ async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             unknown_ids.append(withdraw_id)
 
-    def build_id_chunks(ids, max_chars=3000):
-        chunks = []
-        current_chunk = []
-        current_len = 0
-
-        for wd_id in ids:
-            line_len = len(wd_id) + 1
-            if current_chunk and current_len + line_len > max_chars:
-                chunks.append(current_chunk)
-                current_chunk = []
-                current_len = 0
-            current_chunk.append(wd_id)
-            current_len += line_len
-
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks
-
     async def send_pending_group(gateway_name, ids):
         if not ids:
             return
@@ -1184,13 +1122,13 @@ async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*Total:* {len(ids)}"
         )
         await update.message.reply_text(summary, parse_mode="Markdown")
-
-        for chunk_ids in build_id_chunks(ids):
-            copy_block = "\n" + "\n".join(chunk_ids) + "\n"
-            await update.message.reply_text(
-                f"`{copy_block}`",
-                parse_mode="Markdown"
-            )
+        safe_gateway = gateway_name.lower().replace(" ", "_")
+        await send_ids_txt(
+            update.message,
+            ids,
+            f"{safe_gateway}_pending_ids.txt",
+            f"{gateway_name} pending IDs"
+        )
 
     if ba_ids:
         await send_pending_group("BappaVenture", ba_ids)
