@@ -891,6 +891,29 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success_items.append(f"{wd_id} -> {order_id}")
             success_ids.append(wd_id)
 
+            await update.message.reply_text(
+                "💳 *Withdrawal Request Created Successfully*\n"
+                "────────────────────────\n\n"
+
+                "🆔 *Transaction Details*\n"
+                f"• Withdraw ID   : `{wd_id}`\n"
+                f"• Order ID      : `{order_id}`\n"
+                f"• Gateway       : {payment_method}\n\n"
+
+                "💰 *Payment Information*\n"
+                f"• Amount        : ₹{float(amount):,.2f}\n"
+                f"• Status        : ⏳ Processing\n\n"
+
+                "🏦 *Bank Details*\n"
+                f"• Beneficiary   : {beneficiary_name or 'NA'}\n"
+                f"• Account No    : `{account_number or 'NA'}`\n"
+                f"• IFSC Code     : `{ifsc_code or 'NA'}`\n\n"
+
+                "────────────────────────\n"
+                "ℹ️ Please wait while the transaction is being processed.",
+                parse_mode="Markdown"
+            )
+
         except Exception as e:
             failed_items.append(f"{wd_id} -> {str(e)}")
             failed_ids.append(wd_id)
