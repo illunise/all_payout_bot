@@ -674,13 +674,12 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "❌ Invalid command.\n\n"
-            "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`\n\n"
+            "Use: `/sendwithdraw <total_limit> <gateway> [min_amount] [max_amount]`\n\n"
             "Examples:\n"
-            "`/sendwithdraw 200000`\n"
             "`/sendwithdraw 200000 ba 500 30000`\n"
             "`/sendwithdraw 200000 wln 500`\n"
             "`/sendwithdraw 200000 rs`\n"
-            "Default gateway: `ba`",
+            "Gateway: `ba`, `wln`, `rs`",
             parse_mode="Markdown"
         )
         return
@@ -692,16 +691,24 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text(
             "❌ Invalid amount.\n\n"
-            "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`\n"
+            "Use: `/sendwithdraw <total_limit> <gateway> [min_amount] [max_amount]`\n"
             "Example: `/sendwithdraw 200000 ba 500 30000`",
             parse_mode="Markdown"
         )
         return
 
     args_tail = list(context.args[1:])
-    selected_gateway = "ba"
-    if args_tail and args_tail[0].strip().lower() in {"ba", "wln", "rs"}:
-        selected_gateway = args_tail.pop(0).strip().lower()
+    if not args_tail:
+        await update.message.reply_text(
+            "❌ Gateway is required.\n\n"
+            "Use: `/sendwithdraw <total_limit> <gateway> [min_amount] [max_amount]`\n"
+            "Gateway: `ba`, `wln`, or `rs`\n\n"
+            "Example: `/sendwithdraw 200000 rs`",
+            parse_mode="Markdown"
+        )
+        return
+
+    selected_gateway = args_tail.pop(0).strip().lower()
 
     if selected_gateway not in {"ba", "wln", "rs"}:
         await update.message.reply_text(
@@ -716,7 +723,7 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(args_tail) > 2:
             await update.message.reply_text(
                 "❌ Too many arguments.\n\n"
-                "Use: `/sendwithdraw <total_limit> [gateway] [min_amount] [max_amount]`",
+                "Use: `/sendwithdraw <total_limit> <gateway> [min_amount] [max_amount]`",
                 parse_mode="Markdown"
             )
             return
@@ -751,7 +758,7 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif selected_gateway == "wln":
         payment_method = "Wellness"
     else:
-        payment_method = "RS Manual"
+        payment_method = "Riddhi Siddhi Manual"
     progress_message = await update.message.reply_text(
         "⏳ *Send Withdraw Started*\n"
         "Step 1/4: Downloading latest CSV...",
@@ -800,12 +807,26 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emails_list = load_file_lines("datas/gmail_ids.txt")
             prepared_rows = build_rs_prepared_rows(selected_rows, numbers_list, emails_list)
             prepared_csv_path = write_rs_prepared_csv(prepared_rows)
+
+            for row in selected_rows:
+                insert_withdraw(
+                    {
+                        "withdraw_request_id": row["withdraw_request_id"],
+                        "beneficiary_name": row["beneficiary_name"],
+                        "account_number": row["account_number"],
+                        "ifsc_code": row["ifsc_code"],
+                        "amount": row["amount"],
+                        "status": 2,
+                        "order_id": "",
+                        "payment_method": payment_method,
+                    }
+                )
         except Exception as e:
             await progress_message.edit_text(f"❌ RS CSV preparation error: {str(e)}")
             return
 
         await progress_message.edit_text(
-            "✅ *RS CSV Prepared*\n"
+            "✅ *RS CSV Prepared & DB Updated*\n"
             "Step 3/3: Sending prepared CSV...",
             parse_mode="Markdown"
         )
@@ -814,13 +835,13 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_document(
                 document=prepared_csv,
                 filename=os.path.basename(prepared_csv_path),
-                caption="RS manual gateway CSV (no API call, no DB update)"
+                caption="RS manual gateway CSV (no API call, DB marked success)"
             )
 
         await progress_message.edit_text(
             "✅ *RS Process Completed*\n"
             "No gateway payout API called.\n"
-            "No database insert/update done.",
+            "Database updated with `Success` status and empty `order_id`.",
             parse_mode="Markdown"
         )
         return
