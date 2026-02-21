@@ -26,6 +26,7 @@ from database import (
     mark_withdraw_processing,
     get_processing_withdraws,
     get_success_withdraws,
+    get_all_withdraws,
     update_withdraw_status,
 )
 from bappaVenture import BA_check_payout_status, BA_check_payin_status, BA_create_payout_order
@@ -1342,6 +1343,46 @@ async def success_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_success_group("Unknown Gateway", unknown_ids)
 
 
+async def all_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return
+
+    rows = get_all_withdraws()
+    if not rows:
+        await update.message.reply_text("✅ No IDs found in database.")
+        return
+
+    status_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    lines = []
+    for withdraw_id, status, order_id, payment_method in rows:
+        status_code = int(status) if isinstance(status, int) or str(status).isdigit() else -1
+        if status_code in status_counts:
+            status_counts[status_code] += 1
+        status_text = format_withdraw_status(status_code)
+        lines.append(
+            f"{withdraw_id or 'NA'} | {status_text} | {payment_method or 'NA'} | {order_id or 'NA'}"
+        )
+
+    summary = (
+        "📋 *All Withdraw IDs Summary*\n\n"
+        f"*Total:* {len(rows)}\n"
+        f"*Created:* {status_counts[0]}\n"
+        f"*Processing:* {status_counts[1]}\n"
+        f"*Success:* {status_counts[2]}\n"
+        f"*Failed:* {status_counts[3]}"
+    )
+    await update.message.reply_text(summary, parse_mode="Markdown")
+    await send_lines_txt(
+        update.message,
+        lines,
+        "all_withdraw_ids_status_gateway_orderid.txt",
+        "withdraw_id | status | gateway | order_id"
+    )
+
+
 def process_csv_and_save(csv_path):
     total_ids = 0
     with open(csv_path, newline='', encoding="utf-8") as file:
@@ -1400,6 +1441,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
 app.add_handler(CommandHandler("pendingids", pending_ids))
 app.add_handler(CommandHandler("successids", success_ids))
+app.add_handler(CommandHandler("allids", all_ids))
 app.add_handler(CommandHandler("checkstatus", checkstatus))
 app.add_handler(CommandHandler("sendwithdraw", sendwithdraw))
 app.add_handler(conv_handler)
