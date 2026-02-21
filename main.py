@@ -599,6 +599,10 @@ def select_withdraw_ids_with_limit(withdraw_rows, limit: float, min_amount=None,
     return selected, running_total, skipped
 
 
+def is_withdraw_already_exists(db_row) -> bool:
+    return bool(db_row)
+
+
 async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -708,6 +712,31 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    selected_ids = [row["withdraw_request_id"] for row in selected_rows if row.get("withdraw_request_id")]
+    existing_rows = get_withdraws_by_ids(selected_ids)
+    existing_by_id = {row[0]: row for row in existing_rows}
+
+    filtered_selected_rows = []
+    skipped_existing = 0
+    for row in selected_rows:
+        wd_id = row["withdraw_request_id"]
+        if is_withdraw_already_exists(existing_by_id.get(wd_id)):
+            skipped_existing += 1
+            continue
+        filtered_selected_rows.append(row)
+
+    selected_rows = filtered_selected_rows
+    selected_total = sum(float(row["amount"]) for row in selected_rows)
+    skipped += skipped_existing
+
+    if not selected_rows:
+        await progress_message.edit_text(
+            "⚠️ All selected IDs are already processing/completed in database.\n"
+            f"• Limit: ₹{limit:.2f}\n"
+            f"• Skipped (already processed): {skipped_existing}"
+        )
+        return
+
     await progress_message.edit_text(
         "✅ *CSV Synced*\n"
         f"Step 2/4 complete.\n"
@@ -718,6 +747,7 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Min Amount Filter: `{(f'₹{min_amount:.2f}' if min_amount is not None else 'Not set')}`\n"
         f"• Max Amount Filter: `{(f'₹{max_amount:.2f}' if max_amount is not None else 'Not set')}`\n"
         f"• Skipped: `{skipped}`\n"
+        f"• Already Processed Skipped: `{skipped_existing}`\n"
         f"• Gateway: `{payment_method}`\n\n"
         "Step 3/4: Creating payouts...",
         parse_mode="Markdown"
@@ -771,6 +801,13 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if idx > 1 and PAYOUT_CREATE_DELAY_SEC > 0:
                 await asyncio.sleep(PAYOUT_CREATE_DELAY_SEC)
+
+            # Re-check just before API call to avoid duplicate execution across parallel /sendwithdraw runs.
+            latest_row = get_withdraw_by_id(wd_id)
+            if is_withdraw_already_exists(latest_row):
+                failed_items.append(f"{wd_id} -> Skipped: already processing/sent in DB")
+                failed_ids.append(wd_id)
+                continue
 
             bank_name = await loop.run_in_executor(None, get_bank_name_from_ifsc, ifsc_code)
 
