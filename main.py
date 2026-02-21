@@ -25,6 +25,7 @@ from database import (
     get_withdraw_by_id,
     mark_withdraw_processing,
     get_processing_withdraws,
+    get_success_withdraws,
     update_withdraw_status,
 )
 from bappaVenture import BA_check_payout_status, BA_check_payin_status, BA_create_payout_order
@@ -1286,6 +1287,61 @@ async def pending_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_pending_group("Unknown Gateway", unknown_ids)
 
 
+async def success_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not has_permission(user_id, "ba_payout_status"):
+        await update.message.reply_text("⛔ You don't have permission.")
+        return
+
+    success_rows = get_success_withdraws()
+    if not success_rows:
+        await update.message.reply_text("✅ No success IDs found.")
+        return
+
+    ba_ids = []
+    wln_ids = []
+    unknown_ids = []
+
+    for withdraw_id, _, payment_method in success_rows:
+        if not withdraw_id:
+            continue
+
+        method = str(payment_method or "").strip().lower()
+        if method in ("bappaventure", "ba"):
+            ba_ids.append(withdraw_id)
+        elif method in ("wellness", "wln"):
+            wln_ids.append(withdraw_id)
+        else:
+            unknown_ids.append(withdraw_id)
+
+    async def send_success_group(gateway_name, ids):
+        if not ids:
+            return
+
+        summary = (
+            f"✅ *{gateway_name} Success IDs*\n\n"
+            f"*Total:* {len(ids)}"
+        )
+        await update.message.reply_text(summary, parse_mode="Markdown")
+        safe_gateway = gateway_name.lower().replace(" ", "_")
+        await send_ids_txt(
+            update.message,
+            ids,
+            f"{safe_gateway}_success_ids.txt",
+            f"{gateway_name} success IDs"
+        )
+
+    if ba_ids:
+        await send_success_group("BappaVenture", ba_ids)
+
+    if wln_ids:
+        await send_success_group("Wellness", wln_ids)
+
+    if unknown_ids:
+        await send_success_group("Unknown Gateway", unknown_ids)
+
+
 def process_csv_and_save(csv_path):
     total_ids = 0
     with open(csv_path, newline='', encoding="utf-8") as file:
@@ -1343,6 +1399,7 @@ conv_handler = ConversationHandler(
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler(["pendingwithdraws", "pendingwithdraw"], pending_withdraws))
 app.add_handler(CommandHandler("pendingids", pending_ids))
+app.add_handler(CommandHandler("successids", success_ids))
 app.add_handler(CommandHandler("checkstatus", checkstatus))
 app.add_handler(CommandHandler("sendwithdraw", sendwithdraw))
 app.add_handler(conv_handler)
