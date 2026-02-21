@@ -766,6 +766,7 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         account_number = row["account_number"]
         ifsc_code = row["ifsc_code"]
         amount = row["amount"]
+        done_amount = 0
 
         try:
             if idx > 1 and PAYOUT_CREATE_DELAY_SEC > 0:
@@ -914,6 +915,8 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
+            done_amount += float(amount)
+
         except Exception as e:
             failed_items.append(f"{wd_id} -> {str(e)}")
             failed_ids.append(wd_id)
@@ -935,21 +938,13 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "\n📈 *Execution Result*",
         f"• ✅ Success         : {len(success_items)}",
+        f"• Executed Amount   : ₹{done_amount:,.2f}",
         f"• ❌ Failed          : {len(failed_items)}",
+        f"• Failed Amount   : ₹{selected_total-done_amount:,.2f}",
 
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    try:
-        await progress_message.edit_text(
-            "✅ *Payout Creation Completed*\n"
-            f"*Gateway:* {payment_method}\n"
-            f"*Processed:* {processed_count}/{total_withdraw_ids}\n"
-            "Step 4/4: Final summary sent below.",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        pass
 
     await update.message.reply_text("\n".join(result_parts), parse_mode="Markdown")
     await send_ids_txt(update.message, success_ids, "payout_success_ids.txt", "Success withdraw IDs")
