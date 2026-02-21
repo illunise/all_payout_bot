@@ -4,6 +4,7 @@ import time
 import requests
 import random
 import logging
+from datetime import datetime
 from math import isfinite
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -601,6 +602,64 @@ def select_withdraw_ids_with_limit(withdraw_rows, limit: float, min_amount=None,
     return selected, running_total, skipped
 
 
+def build_rs_prepared_rows(withdraw_rows: list, phone_numbers: list, emails: list):
+    if len(phone_numbers) < len(withdraw_rows):
+        raise RuntimeError(
+            f"Not enough phone numbers in datas/mobile_numbers.txt (need {len(withdraw_rows)}, have {len(phone_numbers)})"
+        )
+    if len(emails) < len(withdraw_rows):
+        raise RuntimeError(
+            f"Not enough emails in datas/gmail_ids.txt (need {len(withdraw_rows)}, have {len(emails)})"
+        )
+
+    phones = list(phone_numbers)
+    mails = list(emails)
+    random.shuffle(phones)
+    random.shuffle(mails)
+
+    prepared_rows = []
+    for idx, row in enumerate(withdraw_rows):
+        prepared_rows.append(
+            {
+                "withdraw_request_id": row["withdraw_request_id"],
+                "beneficiary_name": row["beneficiary_name"],
+                "account_number": row["account_number"],
+                "ifsc_code": row["ifsc_code"],
+                "amount": row["amount"],
+                "mobile_number": phones[idx],
+                "email_id": mails[idx],
+            }
+        )
+
+    return prepared_rows
+
+
+def write_rs_prepared_csv(prepared_rows: list) -> str:
+    output_dir = "datas/generated"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(
+        output_dir,
+        f"sendwithdraw_rs_prepared_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
+
+    fieldnames = [
+        "withdraw_request_id",
+        "beneficiary_name",
+        "account_number",
+        "ifsc_code",
+        "amount",
+        "mobile_number",
+        "email_id",
+    ]
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(prepared_rows)
+
+    return output_path
+
+
 def is_withdraw_already_exists(db_row) -> bool:
     return bool(db_row)
 
@@ -620,6 +679,7 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/sendwithdraw 200000`\n"
             "`/sendwithdraw 200000 ba 500 30000`\n"
             "`/sendwithdraw 200000 wln 500`\n"
+            "`/sendwithdraw 200000 rs`\n"
             "Default gateway: `ba`",
             parse_mode="Markdown"
         )
@@ -640,12 +700,12 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args_tail = list(context.args[1:])
     selected_gateway = "ba"
-    if args_tail and args_tail[0].strip().lower() in {"ba", "wln"}:
+    if args_tail and args_tail[0].strip().lower() in {"ba", "wln", "rs"}:
         selected_gateway = args_tail.pop(0).strip().lower()
 
-    if selected_gateway not in {"ba", "wln"}:
+    if selected_gateway not in {"ba", "wln", "rs"}:
         await update.message.reply_text(
-            "❌ Invalid gateway.\nUse: `ba` or `wln`.\n\nExample: `/sendwithdraw 200000 ba`",
+            "❌ Invalid gateway.\nUse: `ba`, `wln`, or `rs`.\n\nExample: `/sendwithdraw 200000 rs`",
             parse_mode="Markdown"
         )
         return
@@ -686,7 +746,12 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ `min_amount` cannot be greater than `max_amount`.", parse_mode="Markdown")
             return
 
-    payment_method = "BappaVenture" if selected_gateway == "ba" else "Wellness"
+    if selected_gateway == "ba":
+        payment_method = "BappaVenture"
+    elif selected_gateway == "wln":
+        payment_method = "Wellness"
+    else:
+        payment_method = "RS Manual"
     progress_message = await update.message.reply_text(
         "⏳ *Send Withdraw Started*\n"
         "Step 1/4: Downloading latest CSV...",
@@ -714,12 +779,12 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    skipped_existing = 0
     selected_ids = [row["withdraw_request_id"] for row in selected_rows if row.get("withdraw_request_id")]
     existing_rows = get_withdraws_by_ids(selected_ids)
     existing_by_id = {row[0]: row for row in existing_rows}
 
     filtered_selected_rows = []
-    skipped_existing = 0
     for row in selected_rows:
         wd_id = row["withdraw_request_id"]
         if is_withdraw_already_exists(existing_by_id.get(wd_id)):
@@ -736,6 +801,37 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ All selected IDs are already processing/completed in database.\n"
             f"• Limit: ₹{limit:.2f}\n"
             f"• Skipped (already processed): {skipped_existing}"
+        )
+        return
+
+    if selected_gateway == "rs":
+        try:
+            numbers_list = load_file_lines("datas/mobile_numbers.txt")
+            emails_list = load_file_lines("datas/gmail_ids.txt")
+            prepared_rows = build_rs_prepared_rows(selected_rows, numbers_list, emails_list)
+            prepared_csv_path = write_rs_prepared_csv(prepared_rows)
+        except Exception as e:
+            await progress_message.edit_text(f"❌ RS CSV preparation error: {str(e)}")
+            return
+
+        await progress_message.edit_text(
+            "✅ *RS CSV Prepared*\n"
+            "Step 3/3: Sending prepared CSV...",
+            parse_mode="Markdown"
+        )
+
+        with open(prepared_csv_path, "rb") as prepared_csv:
+            await update.message.reply_document(
+                document=prepared_csv,
+                filename=os.path.basename(prepared_csv_path),
+                caption="RS manual gateway CSV (no API call, no DB update)"
+            )
+
+        await progress_message.edit_text(
+            "✅ *RS Process Completed*\n"
+            "No gateway payout API called.\n"
+            "No database insert/update done.",
+            parse_mode="Markdown"
         )
         return
 
