@@ -625,7 +625,7 @@ def build_rs_prepared_rows(withdraw_rows: list, phone_numbers: list, emails: lis
                 "beneficiary_name": row["beneficiary_name"],
                 "account_number": row["account_number"],
                 "ifsc_code": row["ifsc_code"],
-                "amount": row["amount"],
+                "amount": int(row["amount"]),
                 "mobile_number": phones[idx],
                 "email_id": mails[idx],
             }
