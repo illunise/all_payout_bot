@@ -762,12 +762,26 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_event_loop()
         csv_path = await loop.run_in_executor(None, download_withdraw_csv)
         csv_rows = load_withdraw_rows_from_csv(csv_path)
+        csv_ids = [row["withdraw_request_id"] for row in csv_rows if row.get("withdraw_request_id")]
+        existing_rows = get_withdraws_by_ids(csv_ids)
+        existing_ids = {row[0] for row in existing_rows if row and row[0]}
+
+        filtered_csv_rows = []
+        skipped_existing = 0
+        for row in csv_rows:
+            wd_id = row.get("withdraw_request_id")
+            if wd_id in existing_ids:
+                skipped_existing += 1
+                continue
+            filtered_csv_rows.append(row)
+
         selected_rows, selected_total, skipped = select_withdraw_ids_with_limit(
-            csv_rows,
+            filtered_csv_rows,
             limit,
             min_amount=min_amount,
             max_amount=max_amount,
         )
+        skipped += skipped_existing
     except Exception as e:
         await progress_message.edit_text(f"❌ Failed during CSV sync: {str(e)}")
         return
@@ -775,32 +789,8 @@ async def sendwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not selected_rows:
         await progress_message.edit_text(
             "⚠️ No withdraws selected after CSV sync.\n"
-            f"Limit: ₹{limit:.2f}",
-        )
-        return
-
-    skipped_existing = 0
-    selected_ids = [row["withdraw_request_id"] for row in selected_rows if row.get("withdraw_request_id")]
-    existing_rows = get_withdraws_by_ids(selected_ids)
-    existing_by_id = {row[0]: row for row in existing_rows}
-
-    filtered_selected_rows = []
-    for row in selected_rows:
-        wd_id = row["withdraw_request_id"]
-        if is_withdraw_already_exists(existing_by_id.get(wd_id)):
-            skipped_existing += 1
-            continue
-        filtered_selected_rows.append(row)
-
-    selected_rows = filtered_selected_rows
-    selected_total = sum(float(row["amount"]) for row in selected_rows)
-    skipped += skipped_existing
-
-    if not selected_rows:
-        await progress_message.edit_text(
-            "⚠️ All selected IDs are already processing/completed in database.\n"
-            f"• Limit: ₹{limit:.2f}\n"
-            f"• Skipped (already processed): {skipped_existing}"
+            f"Limit: ₹{limit:.2f}\n"
+            f"Skipped (already processed): {skipped_existing}",
         )
         return
 
