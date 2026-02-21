@@ -1133,16 +1133,15 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if method in ("bappaventure", "ba"):
                 result = await loop.run_in_executor(None, BA_check_payout_status, order_id)
-                msg_obj = result.get("msg", {}) if isinstance(result, dict) else {}
-                ba_status = str(msg_obj.get("status", "")).strip().lower()
+                ba_status = result.get("msg", {}).get("status")
 
                 if not ba_status:
                     ba_status = str(result.get("status", "")).strip().lower()
 
-                if ba_status in success_states:
+                if ba_status == 1:
                     update_withdraw_status(withdraw_id, 2)
                     ba_success_ids.append(withdraw_id)
-                elif ba_status in failed_states:
+                elif ba_status == 3:
                     update_withdraw_status(withdraw_id, 3)
                     ba_failed_ids.append(withdraw_id)
                 else:
