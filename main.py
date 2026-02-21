@@ -1091,8 +1091,8 @@ async def checkstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processed_count = 0
     progress_step = max(1, total_rows // 10)
 
-    success_states = {"1", "2", "success", "completed", "approved", "done", "paid", "true"}
-    failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false"}
+    success_states = {"1", "2", "success", "completed", "approved", "done", "paid", "true", "200"}
+    failed_states = {"3", "4", "failed", "failure", "rejected", "cancelled", "canceled", "declined", "false", "400"}
     pending_states = {"0", "pending", "processing", "inprocess", "queued", "initiated"}
 
     loop = asyncio.get_event_loop()
